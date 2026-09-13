@@ -42,7 +42,7 @@ static void Log(const char* fmt, ...)
     fclose(f);
 }
 
-struct Config { bool enabled = true; int partySize = 6; };
+struct Config { bool enabled = true; int partySize = 6; int maxPlayers = 0; };   // maxPlayers 0 = follow partySize
 
 static Config ReadConfig()
 {
@@ -58,11 +58,15 @@ static Config ReadConfig()
         if (sscanf_s(p, "%63[^= \t] = %d", key, (unsigned)sizeof key, &val) == 2 || sscanf_s(p, "%63[^=]=%d", key, (unsigned)sizeof key, &val) == 2) {
             if (_stricmp(key, "Enabled") == 0) c.enabled = val != 0;
             else if (_stricmp(key, "PartySize") == 0) c.partySize = val;
+            else if (_stricmp(key, "MaxPlayers") == 0) c.maxPlayers = val;
         }
     }
     fclose(f);
     if (c.partySize < 1) c.partySize = 1;
     if (c.partySize > 8) c.partySize = 8;      // the creation screen and lobby UI were not designed for more
+    if (c.maxPlayers <= 0) c.maxPlayers = c.partySize;
+    if (c.maxPlayers < 1) c.maxPlayers = 1;
+    if (c.maxPlayers > c.partySize) c.maxPlayers = c.partySize;
     return c;
 }
 
@@ -71,6 +75,7 @@ static Config ReadConfig()
 // ------------------------------------------------------------------------------------------------
 struct Patch {
     const char* name;
+    bool playerSlots;          // true = governed by MaxPlayers, false = by PartySize
     std::vector<int> sig;      // -1 = wildcard
     size_t offset;             // byte within the signature that holds the literal
     uint8_t original;          // expected literal
@@ -79,13 +84,13 @@ struct Patch {
 };
 
 static std::vector<Patch> g_patches = {
-    { "SetupDefaultSession slot count",
+    { "SetupDefaultSession slot count", false,
       { 0x41, 0xBD, 0x04, 0x00, 0x00, 0x00, 0x89, 0x44, 0x24, 0x5C, 0x48, 0x8D, 0x05 }, 2, 4 },
-    { "CreateOnlineHostSessionRequest MaxPlayerCount",
+    { "CreateOnlineHostSessionRequest MaxPlayerCount", true,
       { 0xC7, 0x80, 0xA0, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xC6, 0x40, 0x2A, 0x01 }, 6, 4 },
-    { "ReadRuntimeSessionFromGameState slot cap (lea)",
+    { "ReadRuntimeSessionFromGameState slot cap (lea)", true,
       { 0x44, 0x8D, 0x63, 0x04, 0x39, 0x9F, 0xC0, 0x00, 0x00, 0x00, 0x0F, 0x85 }, 3, 4 },
-    { "ReadRuntimeSessionFromGameState slot cap (cmp)",
+    { "ReadRuntimeSessionFromGameState slot cap (cmp)", true,
       { 0x83, 0xFB, 0x04, 0x48, 0x8B, 0xCF, 0x44, 0x0F, 0x4C, 0xE3 }, 2, 4 },
 };
 
@@ -149,10 +154,11 @@ static bool WriteByte(uint8_t* addr, uint8_t value)
 
 static void ApplyConfig(const Config& c)
 {
-    const bool want = c.enabled && c.partySize != 4;
-    const uint8_t value = (uint8_t)c.partySize;
     for (auto& p : g_patches) {
         if (!p.address) continue;
+        const int target = p.playerSlots ? c.maxPlayers : c.partySize;
+        const bool want = c.enabled && target != p.original;
+        const uint8_t value = (uint8_t)target;
         if (want) {
             if (WriteByte(p.address, value)) { p.applied = true; Log("  patched  %-48s -> %d", p.name, value); }
             else Log("  FAILED to write %s", p.name);
@@ -160,7 +166,7 @@ static void ApplyConfig(const Config& c)
             if (WriteByte(p.address, p.original)) { p.applied = false; Log("  restored %-48s -> %d", p.name, p.original); }
         }
     }
-    Log("state: %s (PartySize=%d)", want ? "ACTIVE" : "inert (vanilla)", c.partySize);
+    Log("state: %s (PartySize=%d, MaxPlayers=%d)", c.enabled ? "ACTIVE" : "inert (vanilla)", c.partySize, c.maxPlayers);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -183,7 +189,7 @@ static DWORD WINAPI WatcherThread(LPVOID)
         Sleep(1000);
         if (IniChanged()) {
             Config c = ReadConfig();
-            Log("config changed: Enabled=%d PartySize=%d", c.enabled ? 1 : 0, c.partySize);
+            Log("config changed: Enabled=%d PartySize=%d MaxPlayers=%d", c.enabled ? 1 : 0, c.partySize, c.maxPlayers);
             ApplyConfig(c);
         }
     }
@@ -240,7 +246,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
         wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
         Log("BiggerParty patcher loaded into %ls", exe);
         Config c = ReadConfig();
-        Log("config: Enabled=%d PartySize=%d", c.enabled ? 1 : 0, c.partySize);
+        Log("config: Enabled=%d PartySize=%d MaxPlayers=%d", c.enabled ? 1 : 0, c.partySize, c.maxPlayers);
         LocatePatches();
         ApplyConfig(c);
         CreateThread(nullptr, 0, WatcherThread, nullptr, 0, nullptr);

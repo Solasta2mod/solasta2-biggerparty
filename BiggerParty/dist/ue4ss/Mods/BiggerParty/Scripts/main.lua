@@ -6,18 +6,21 @@
 --   * shrinks the character cards so all slots fit, and widens the creation camera,
 --   * extends the players selector on the multiplayer host screen to 2..N and re-flows the lobby tiles,
 --   * extends the inspection screen's portrait strip (extra portraits, selection ring and click),
+--   * fits the per-hero rows on the rest screens,
+--   * keeps story dialogues working with more than four heroes (see the dialogue section below),
 --   * owns the on/off toggle: it rewrites BiggerParty.ini and the DLL's watcher follows within a second.
 --
 -- Config (Brimstone\Binaries\Win64\BiggerParty.ini, shared with the DLL):
 --   [BiggerParty]
 --   Enabled=1
 --   PartySize=6
+--   MaxPlayers=6                 (human players per hosted session; default = PartySize)
 --   CameraFovMultiplier=1.35     (optional; default grows with PartySize)
 --
 -- Hotkeys:
 --   Ctrl+Shift+Tab         toggle Enabled on/off (takes effect for the next new campaign / lobby)
 --   Ctrl+Shift+End         re-apply the UI tweaks on the current screen
---   Ctrl+Shift+Backspace   status report to the UE4SS log (config, DLL log tail, party/slot counts)
+--   Ctrl+Shift+Backspace   status report to the UE4SS log (config, DLL log tail, party/slot counts, roles)
 
 local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
@@ -75,7 +78,7 @@ local function FindIniPath()
     return nil
 end
 
-local CFG = { Enabled = true, PartySize = 6, CameraFovMultiplier = nil }
+local CFG = { Enabled = true, PartySize = 6, MaxPlayers = 0, CameraFovMultiplier = nil }   -- MaxPlayers 0 = follow PartySize
 
 local function ReadConfig()
     local p = FindIniPath()
@@ -85,11 +88,14 @@ local function ReadConfig()
         if k then
             if k:lower() == "enabled" then CFG.Enabled = (v ~= "0")
             elseif k:lower() == "partysize" then CFG.PartySize = tonumber(v) or 6
+            elseif k:lower() == "maxplayers" then CFG.MaxPlayers = tonumber(v) or 0
             elseif k:lower() == "camerafovmultiplier" then CFG.CameraFovMultiplier = tonumber(v) end
         end
     end
     if CFG.PartySize < 1 then CFG.PartySize = 1 end
     if CFG.PartySize > 8 then CFG.PartySize = 8 end
+    if CFG.MaxPlayers <= 0 then CFG.MaxPlayers = CFG.PartySize end
+    if CFG.MaxPlayers > CFG.PartySize then CFG.MaxPlayers = CFG.PartySize end
 end
 
 local function WriteEnabled(enabled)
@@ -320,17 +326,17 @@ local function ExtendPlayersRadio(screen)
     if n < 1 then Out("host screen: RadioOptions unreadable") return end
     local labels = {}
     for i = 1, n do labels[i] = Try(function() return opts[i]:ToString() end) or "?" end
-    local wantCount = CFG.PartySize - 1          -- options are 2..PartySize
+    local wantCount = CFG.MaxPlayers - 1         -- options are 2..MaxPlayers
     if n >= wantCount then RADIO_DONE[rg:GetAddress()] = true return end
     local ok, err = pcall(function()
-        for v = n + 2, CFG.PartySize do
+        for v = n + 2, CFG.MaxPlayers do
             opts[#opts + 1] = FText(tostring(v))
         end
         rg:SetRadioOptions(opts)
     end)
     if ok then
         RADIO_DONE[rg:GetAddress()] = true
-        Out("host screen: players options were [%s], now 2..%d", table.concat(labels, ", "), CFG.PartySize)
+        Out("host screen: players options were [%s], now 2..%d", table.concat(labels, ", "), CFG.MaxPlayers)
     else
         Out("host screen: could not extend players options: %s", tostring(err))
     end
@@ -748,50 +754,123 @@ local okM, errM = pcall(function()
 end)
 if not okM then Out("click: could not bind the left mouse button: %s", tostring(errM)) end
 
-local function InspectionDiagnostics()
-    for _, pc in ipairs(Instances("PartyComponent")) do
-        Out("inspect: Party=%d PartySubgroups=%d", Count(Try(function() return pc.Party end)), Count(Try(function() return pc.PartySubgroups end)))
-    end
-    for _, grp in ipairs(Instances("PlayerSelectionGroup")) do
-        local tbl = Try(function() return grp.CharacterPlatesTable end)
-        Out("inspect: %s visible=%s table=%s children=%s", ShortName(grp:GetFullName()), tostring(Try(function() return grp:IsVisible() end)),
-            tbl and tbl:IsValid() and ClassName(tbl) or "?", tostring(tbl and tbl:IsValid() and Try(function() return tbl:GetChildrenCount() end)))
-        local n = tbl and tbl:IsValid() and (Try(function() return tbl:GetChildrenCount() end) or 0) or 0
-        for k = 0, n - 1 do
-            local plate = Try(function() return tbl:GetChildAt(k) end)
-            if plate and plate:IsValid() then
-                local size = Try(function() return plate:GetDesiredSize() end)
-                Out("   plate[%d] %s vis=%s isVisible=%s desired=%s", k, ClassName(plate), tostring(Try(function() return plate:GetVisibility() end)),
-                    tostring(Try(function() return plate:IsVisible() end)), size and string.format("%.0fx%.0f", size.X, size.Y) or "?")
+--------------------------------------------------------------------------------------------------
+-- Per-hero rows on other screens (short/long rest, initiative, assignment, ...): the same designer
+-- layout problem as the creation cards — a row built for four heroes overflows with six. Shrink the
+-- fixed widths inside each card by 4/N, the fix that worked on the creation screen and the lobby.
+--------------------------------------------------------------------------------------------------
+local ROW_DONE = {}
+
+-- Containers to fit, as { class = "<UE4SS class name>", fields = { "<container property>", ... } }.
+local HERO_ROWS = {
+    { class = "PostRestActionsPanel",     fields = { "CharacterActionRowsTable" } },
+    { class = "PostRestLostPanel",        fields = { "CharacterLostRowsTable" } },
+    { class = "PostRestRecoveredPanel",   fields = { "CharacterRecoveredRowsTable" } },
+    { class = "RestPredictionPanel",      fields = { "CharacterConsumedFoodTable", "CharacterLostEffectsTable", "CharacterRestoredFeaturesTable" } },
+    { class = "BattleInitiativePanel",    fields = { "CharacterPlatesTable" } },
+    { class = "CharacterAssignmentScreen", fields = { "HeroesContainer", "NPCsContainer", "UnassignedCharactersHB", "UnassignedPlayersHB" } },
+}
+
+-- Shrink every fixed width inside a container's children so N of them occupy the space of 4.
+local function FitRow(container, label)
+    if not (container and container:IsValid()) then return end
+    local n = Try(function() return container:GetChildrenCount() end) or 0
+    if n <= 4 then return end
+    local key = container:GetAddress()
+    if ROW_DONE[key] then return end
+    local f = 4 / n
+    local sizeBoxClass = StaticFindObject("/Script/UMG.SizeBox")
+    local hSlotClass = StaticFindObject("/Script/UMG.HorizontalBoxSlot")
+    local boxes, pads = 0, 0
+    for k = 0, n - 1 do
+        local card = Try(function() return container:GetChildAt(k) end)
+        if card and card:IsValid() then
+            local slot = Try(function() return card.Slot end)
+            if slot and slot:IsValid() and hSlotClass and slot:IsA(hSlotClass) then
+                local pad = Try(function() return slot.Padding end)
+                if pad and pcall(function() slot:SetPadding({ Left = pad.Left * f, Top = pad.Top, Right = pad.Right * f, Bottom = pad.Bottom }) end) then pads = pads + 1 end
             end
+            ForEachWidget(card, function(w)
+                if sizeBoxClass and w:IsA(sizeBoxClass) then
+                    local over = Try(function() return w.bOverride_WidthOverride end)
+                    local width = Try(function() return w.WidthOverride end) or 0
+                    if over and width > 0 and pcall(function() w:SetWidthOverride(width * f) end) then boxes = boxes + 1 end
+                    local minOver = Try(function() return w.bOverride_MinDesiredWidth end)
+                    local minW = Try(function() return w.MinDesiredWidth end) or 0
+                    if minOver and minW > 0 then pcall(function() w:SetMinDesiredWidth(minW * f) end) end
+                end
+            end)
         end
     end
-    pcall(FixPartyStrip, true)
-    pcall(ExtendInspectionPortraits, true)
-    -- dump the inspection screen's widget tree (class counts + any widget whose name smells like a party strip)
-    for _, screen in ipairs(Instances("InspectionScreen")) do
-        local classes, interesting, total = {}, {}, 0
-        ForEachWidget(screen, function(w)
-            total = total + 1
-            local c = ClassName(w); classes[c] = (classes[c] or 0) + 1
-            local name = ShortName(w:GetFullName())
-            if name:match("[Pp]ortrait") or name:match("[Pp]arty") or name:match("[Hh]ero") or name:match("[Tt]ab") or c:match("Portrait") or c:match("Party") or c:match("Plate") or c:match("Selector") then
-                local n = Try(function() return w:GetChildrenCount() end)
-                interesting[#interesting + 1] = string.format("%s (%s)%s", name, c, n and (" children=" .. n) or "")
+    ROW_DONE[key] = true
+    if boxes == 0 and pads == 0 then
+        -- nothing fixed-width to shrink: fall back to scaling the row visually
+        pcall(function() container:SetRenderScale({ X = f, Y = f }) end)
+        Out("rows: %s has %d cards and no fixed widths — scaled the row by %.2f", label, n, f)
+    else
+        Out("rows: %s fitted %d cards (%d width(s), %d padding(s) by %.2f)", label, n, boxes, pads, f)
+    end
+end
+
+local function FitHeroRows()
+    if not Active() then return end
+    for _, entry in ipairs(HERO_ROWS) do
+        for _, screen in ipairs(Instances(entry.class)) do
+            if Try(function() return screen:IsVisible() end) then
+                for _, field in ipairs(entry.fields) do
+                    local container = Try(function() return screen[field] end)
+                    pcall(FitRow, container, entry.class .. "." .. field)
+                end
             end
-        end)
-        Out("inspect: %s widget tree: %d widgets", ShortName(screen:GetFullName()), total)
-        local list = {}
-        for c, n in pairs(classes) do list[#list + 1] = string.format("%s x%d", c, n) end
-        table.sort(list)
-        Out("   classes: %s", table.concat(list, ", "))
-        for _, line in ipairs(interesting) do Out("   %s", line) end
+        end
     end
 end
 
 --------------------------------------------------------------------------------------------------
--- Status report
+-- Family roles. The campaign defines exactly four (GoldenKid, Scapegoat, Substitute, TopStudent), one
+-- per sibling, and an early story beat asks each hero to take one. With six heroes that step runs out
+-- of roles and its screen is never pushed, which locks the scene. Give heroes 5+ a role up front so the
+-- step has nothing left to ask; duplicates are accepted by the data (roles are just gameplay tags).
 --------------------------------------------------------------------------------------------------
+local function PartyMembers()
+    for _, pc in ipairs(Instances("PartyComponent")) do
+        local party = Try(function() return pc.Party end)
+        if Count(party) > 0 then return party end
+    end
+    return nil
+end
+
+local function HeroIdentity(hero)
+    local cls = StaticFindObject("/Script/Brimstone.HeroIdentityComponent")
+    if not (cls and cls:IsValid()) then return nil end
+    return Try(function() return hero:GetComponentByClass(cls) end)
+end
+
+local function FamilyRoleOf(hero)
+    local ident = HeroIdentity(hero)
+    if not (ident and ident:IsValid()) then return nil, nil, "no HeroIdentityComponent" end
+    local ok, tag = pcall(function() return ident.IdentityData.FamilyRole.TagName:ToString() end)
+    if not ok then return ident, nil, "unreadable: " .. tostring(tag) end
+    if tag == nil or tag == "" or tag == "None" then return ident, nil, "none" end
+    return ident, tag, nil
+end
+
+local function ReportFamilyRoles()
+    local party = PartyMembers()
+    if not party then Out("roles: no party loaded") return end
+    for i = 1, Count(party) do
+        local hero = party[i]
+        local ident, role, why = FamilyRoleOf(hero)
+        Out("roles: [%d] %-28s %s", i, ShortName(hero:GetFullName()), role or ("(" .. (why or "?") .. ")"))
+    end
+end
+
+--------------------------------------------------------------------------------------------------
+-- Experiment: the early "family roles" beat is written for exactly four siblings and never pushes its
+-- screen with six heroes. Hide the extras from the conversation by deactivating their participant
+-- components, let the scene run with four, then hand them back.
+--------------------------------------------------------------------------------------------------
+
 local function Report()
     ReadConfig()
     Out("config: Enabled=%s PartySize=%d FovMult=%.2f (%s)", tostring(CFG.Enabled), CFG.PartySize, FovMult(), iniPath or "ini not found")
@@ -820,7 +899,10 @@ local function Report()
     for _, pc in ipairs(Instances("PartyComponent")) do
         Out("party: %d members", Count(Try(function() return pc.Party end)))
     end
-    pcall(InspectionDiagnostics)
+    pcall(FixPartyStrip, true)
+    pcall(ExtendInspectionPortraits, true)
+    pcall(FitHeroRows)
+    pcall(ReportFamilyRoles)
 end
 
 --------------------------------------------------------------------------------------------------
@@ -861,9 +943,165 @@ for _, cls in ipairs({ "/Script/Brimstone.SessionSetupScreen", "/Script/Brimston
 end
 
 -- The inspection screen is created once and reused, so poll while its strip is visible (cheap).
+--------------------------------------------------------------------------------------------------
+-- Dialogue participant fix. Story scenes bind a fixed number of party participants (the family scene
+-- binds Party.A..D = four heroes). The dialogue screen is only pushed by the participant on the hero
+-- the player currently has selected, so with six heroes a selected-but-unbound hero leaves the scene
+-- with no UI. When a dialogue hands out participant contexts, make sure the selected hero is one of
+-- the bound ones — using the game's own selection call.
+--------------------------------------------------------------------------------------------------
+
+local function SelectionState()
+    for _, c in ipairs(Instances("BrimstoneSelectionStateComponent")) do return c end
+    return nil
+end
+
+
+-- the participant lives on the pawn (Character_<Hero>); the party array holds the hero actor
+local function HeroForPawn(pawn)
+    local name = ShortName(pawn:GetFullName()):gsub("^Character_", "")
+    local _, party = (function()
+        for _, pc in ipairs(Instances("PartyComponent")) do
+            local party = Try(function() return pc.Party end)
+            if Count(party) > 0 then return pc, party end
+        end
+        return nil, nil
+    end)()
+    if not party then return nil end
+    for i = 1, Count(party) do
+        local m = party[i]
+        if m and m:IsValid() and ShortName(m:GetFullName()) == name then return m end
+    end
+    return nil
+end
+
+local PARTY_SWAP = nil        -- { pc = PartyComponent, a = index of the hero moved to the front, tag = dialogue }
+
+local function PartyComponentAndArray()
+    for _, pc in ipairs(Instances("PartyComponent")) do
+        local party = Try(function() return pc.Party end)
+        if Count(party) > 0 then return pc, party end
+    end
+    return nil, nil
+end
+
+local RestorePartyOrder   -- defined below
+local EXIT_TOKEN = 0      -- bumped by every swap and every conversation exit; a pending restore only fires if still current
+local function SwapPartyFront(hero, tag)
+    if PARTY_SWAP and PARTY_SWAP.tag == tag then return end
+    if PARTY_SWAP then RestorePartyOrder() end
+    local pc, party = PartyComponentAndArray()
+    if not party then return end
+    local idx = nil
+    for i = 1, Count(party) do
+        local m = party[i]
+        if m and m:IsValid() and m:GetAddress() == hero:GetAddress() then idx = i break end
+    end
+    if idx == nil then Out("party: %s is not in the party array", ShortName(hero:GetFullName())) return end
+    if idx == 1 then Out("party: %s is already party member #1", ShortName(hero:GetFullName())) return end
+    local first = party[1]
+    local ok, err = pcall(function()
+        local arr = pc.Party
+        arr[1] = hero
+        arr[idx] = first
+    end)
+    local check = Try(function() return pc.Party[1] end)
+    local swapped = ok and check and check:IsValid() and check:GetAddress() == hero:GetAddress()
+    if swapped then PARTY_SWAP = { pc = pc, a = idx, tag = tag }; EXIT_TOKEN = EXIT_TOKEN + 1 end   -- cancels a restore pending from the previous dialogue
+    Out("party: moving %s to member #1 (was #%d) for %s: %s", ShortName(hero:GetFullName()), idx, tag,
+        swapped and "ok" or ("failed " .. tostring(err)))
+end
+
+RestorePartyOrder = function()
+    if not PARTY_SWAP then return end
+    local sw = PARTY_SWAP
+    PARTY_SWAP = nil
+    if not (sw.pc and sw.pc:IsValid()) then return end
+    local ok, err = pcall(function()
+        local arr = sw.pc.Party
+        local a, b = arr[1], arr[sw.a]
+        arr[1] = b
+        arr[sw.a] = a
+    end)
+    Out("party: order restored after %s: %s", sw.tag, ok and "ok" or tostring(err))
+end
+
+local EARLY_DONE = {}         -- dialogue tag -> true once a hero has been possessed for it
+local function PossessEarly(self, tag)
+    if not Active() then return end
+    if not tag or tag == "None" or tag == "" or EARLY_DONE[tag] then return end
+    local owner = Try(function() return self:GetOwner() end)
+    if not (owner and owner:IsValid()) then return end
+    if not ShortName(owner:GetFullName()):match("^Character_") then return end
+    EARLY_DONE[tag] = true
+    ExecuteWithDelay(5000, function() EARLY_DONE[tag] = nil end)
+    local pc = UEHelpers.GetPlayerController()
+    if not (pc and pc:IsValid()) then return end
+    local current = Try(function() return pc:K2_GetPawn() end)
+    if current and current:IsValid() and current:GetAddress() == owner:GetAddress() then
+        Out("dialogue: %s - possessed hero %s is the first bound participant, nothing to do", tag, ShortName(owner:GetFullName()))
+        pcall(SwapPartyFront, HeroForPawn(owner) or owner, tag)
+        return
+    end
+    local ok, err = pcall(function() pc:Possess(owner) end)
+    local after = Try(function() return pc:K2_GetPawn() end)
+    Out("dialogue: %s - possessing first bound hero %s before the scene binds: %s (pawn now %s)", tag, ShortName(owner:GetFullName()),
+        ok and "ok" or tostring(err), (after and after:IsValid()) and ShortName(after:GetFullName()) or "none")
+    pcall(SwapPartyFront, HeroForPawn(owner) or owner, tag)
+end
+
+local function OnConversationExit()
+    if not PARTY_SWAP then return end
+    EXIT_TOKEN = EXIT_TOKEN + 1
+    local token = EXIT_TOKEN
+    ExecuteWithDelay(1500, function()
+        ExecuteInGameThread(function()
+            if token == EXIT_TOKEN then pcall(RestorePartyOrder) end
+        end)
+    end)
+end
+for _, mod in ipairs({ "/Script/CommonConversationRuntime.", "/Script/Brimstone." }) do
+    local okX = pcall(function()
+        RegisterHook(mod .. "ConversationParticipantComponent:ClientExitConversation", function(Context)
+            pcall(OnConversationExit)
+        end)
+    end)
+    if okX then break end
+end
+
+local function ResyncSelection()
+    local pc = UEHelpers.GetPlayerController()
+    local pawn = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
+    local sel = SelectionState()
+    if not (pawn and pawn:IsValid() and sel and sel:IsValid()) then return end
+    if not ShortName(pawn:GetFullName()):match("^Character_") then return end
+    local ok = pcall(function() sel:SelectCharacter(pawn, pc, true, true) end)
+    Out("dialogue: re-synced selection to %s after the dialogue: %s", ShortName(pawn:GetFullName()), ok and "ok" or "refused")
+end
+for _, mod in ipairs({ "/Script/Brimstone.", "/Script/DialogueSystem.", "/Script/BrimstoneDialogue.", "/Script/TacticalCore." }) do
+    local okE = pcall(function()
+        RegisterHook(mod .. "DialogueManagerComponent:OnDialogueInstanceEnded", function(Context)
+            ExecuteWithDelay(500, function() ExecuteInGameThread(function() pcall(RestorePartyOrder); pcall(ResyncSelection) end) end)
+        end)
+    end)
+    if okE then break end
+end
+
+for _, mod in ipairs({ "/Script/Brimstone.", "/Script/DialogueSystem.", "/Script/BrimstoneDialogue.", "/Script/TacticalCore." }) do
+    local okB = pcall(function()
+        RegisterHook(mod .. "DialogueParticipantComponent:ClientInitParticipantContext", function(Context, P1)
+            local self = Context:get()
+            local ctx = P1 and Try(function() return P1:get() end)
+            local tag = ctx and Try(function() return ctx.DialogueTag.TagName:ToString() end)
+            pcall(PossessEarly, self, tag)
+        end)
+    end)
+    if okB then break end
+end
+
 LoopAsync(1000, function()
     ExecuteInGameThread(function()
-        if Active() then pcall(FixPartyStrip, false); pcall(ExtendInspectionPortraits, false); pcall(UpdateExtraHighlights) end
+        if Active() then pcall(FixPartyStrip, false); pcall(ExtendInspectionPortraits, false); pcall(UpdateExtraHighlights); pcall(FitHeroRows) end
     end)
     return false
 end)
@@ -886,13 +1124,17 @@ RegisterKeyBind(Key.END, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
         for _, s in ipairs(Instances("SessionSetupScreen")) do pcall(FixPlayerTiles, s) end
         for _, s in ipairs(Instances("MultiplayerSettingsScreen")) do pcall(FixPlayerTiles, s) end
         pcall(FixPartyStrip, true)
+        pcall(FitHeroRows)
         pcall(ExtendInspectionPortraits, true)
         Out("re-applied layout/camera/host-screen tweaks")
     end)
 end)
 
 RegisterKeyBind(Key.BACKSPACE, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
-    ExecuteInGameThread(function() local ok, err = pcall(Report); if not ok then Out("report failed: %s", tostring(err)) end end)
+    ExecuteInGameThread(function()
+        local ok, err = pcall(Report)
+        if not ok then Out("report failed: %s", tostring(err)) end
+    end)
 end)
 
 Out("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift+End re-apply, Ctrl+Shift+Backspace status",

@@ -33,6 +33,7 @@ Uninstall: run the installer again and press **u**.
 | Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots start unassigned — joiners claim them, or the host takes them with the slot's assign button |
 | **Ctrl+Shift+Tab** | toggle the mod on/off (applies to the next new campaign / lobby) |
 | Inventory / character sheet | six portraits: Tab or click to switch hero |
+| Story dialogues | work with six heroes (the mod keeps a participating hero in party slot 1 while a dialogue runs) |
 | **Ctrl+Shift+End** | re-apply the UI tweaks on the current screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
 
@@ -42,6 +43,19 @@ was only tested with 6). Logs: `BiggerParty.log` (native patcher) and `ue4ss\UE4
 GiveSpellbook (host / single player only): **Ctrl+Delete** grants a Wizard spellbook to any hero whose
 spellcasting reports it missing; **Ctrl+Backspace** reports; **Ctrl+Shift+Delete** forces one on everyone
 without a book.
+
+## Known limitations
+
+- **Family roles.** The early campaign scene where each sibling picks a family role has exactly four
+  slots, so with six heroes the scene binds the *last four* party members and the other two sit it out.
+  Everything proceeds normally; those two heroes simply hold no family role.
+- **Dialogue participants.** Story scenes bind a fixed number of party participants, and the game routes
+  the chosen option through party member #1. While a dialogue runs, the mod moves the first participating
+  hero to slot #1 and possesses them, then restores the party order when the dialogue ends. You may notice
+  the party strip reorder briefly during scenes.
+- **Players versus heroes.** `PartySize` is the number of heroes; `MaxPlayers` (in `BiggerParty.ini`) is
+  the number of human players a hosted session accepts and defaults to `PartySize`. Set `MaxPlayers=4` to
+  keep the vanilla four-seat lobby with a six-hero party.
 
 ## How it works
 

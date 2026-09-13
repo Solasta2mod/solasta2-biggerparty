@@ -19,6 +19,7 @@ def find_symbols(substrings):
                     i = data.find(sub, start)
                     if i < 0: break
                     j = data.rfind(b"?", max(0, i - 300), i + 1)
+                    if j > 0 and data[j - 1:j] == b"?": j -= 1      # names like ??_7Class@@6B@ (vtables) start with two '?'
                     if j >= 12:
                         kind, flags, off, seg = struct.unpack_from("<HIIH", data, j - 12)
                         if kind == 0x110E:

@@ -79,6 +79,36 @@ are worth writing down:
   makes the same call — skipping the currently-selected portrait, because the selected one is enlarged and
   would otherwise swallow a click aimed at its neighbour.
 
+## Story dialogues with more than four heroes
+
+Three separate things had to be true for a six-hero party to get through a story scene; each was found by
+tracing the conversation pipeline at runtime with hooks on the reflected functions, then reading the native
+code around the failure.
+
+1. **The dialogue screen is pushed by the participant on the possessed pawn.** A scene binds a fixed set
+   of party participants (the family scene binds `Dialogue.Participant.Party.A–D`, i.e. the *last four*
+   party members). `UBrimstoneDialogueParticipantComponent::ReadySelfForConversationInternal` pushes the
+   screen only when its pawn is the one the player controller possesses, and each participant readies
+   itself exactly once. If the possessed hero is not bound, no screen ever appears — and possessing a
+   bound hero afterwards does nothing, because the one-shot readiness is already consumed. The mod
+   therefore possesses the first bound hero **synchronously inside the pre-hook of
+   `ClientInitParticipantContext`**, before the game's own code runs. The game's `SelectCharacter` refuses
+   selection changes once a dialogue is starting, so this has to be `AController::Possess` directly.
+2. **The vote is resolved through party member #1.** `UMultiplayerCheckpointManagerComponent::
+   SelectFinalConversationChoice` takes `GetParty()[0]`, finds that hero's conversation-participant
+   component and calls `RequestServerAdvanceConversation` on it. With six heroes, member #1 is not a
+   participant, the request goes to a component outside the conversation, and the scene stalls after the
+   first click (the vote window closes with the vote). The mod moves the first bound hero to party slot 1
+   for the duration of the dialogue and restores the order on `ClientExitConversation`.
+3. **Votes only count for "joined" players**, i.e. player states with both `bHasCompletedHotJoinGate` and
+   `bReadyForHotJoin` set (`ABrimstoneGameState::HasPlayerJoinedGameplay`), and the expected number of votes
+   is `GetGameplayJoinedPlayerCount()`. This turned out to be fine for a solo host — worth knowing because
+   it is the first thing to check if a real six-player session ever refuses a choice.
+
+Two dead ends worth recording so nobody repeats them: the multiplayer *vote panel* (`UMultiplayerVotePanel`)
+is for rests, checkpoints and fast travel, not dialogue choices; and pre-assigning family roles to the extra
+heroes does not help — the scene's participant count is what matters, not the roles.
+
 ## Re-signing after a game patch
 
 1. Point the tools at the new build and confirm each signature still matches exactly once:
@@ -103,6 +133,7 @@ Python 3, no third-party dependencies except `capstone` for the disassembler.
 | `pdb_members.py` | class field offsets from PDB `LF_MEMBER` records |
 | `disasm.py` / `fnview.py` | disassemble a function; `fnview` resolves call targets to symbol names |
 | `callers.py` | find direct call sites of a function |
+| `vtable.py` | read a vtable slot from the exe and map it back to a PDB symbol (resolves virtual calls in disassembly) |
 | `pak_index.py` / `pak_read.py` | parse and extract the unencrypted `Brimstone-Windows.pak` (set `OODLE_DLL` to any `oo2core_*_win64.dll`) |
 | `utoc_index.py` | parse the IoStore `.utoc` directory index to list cooked asset paths |
 
