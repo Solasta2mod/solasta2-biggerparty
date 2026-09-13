@@ -1,0 +1,23 @@
+# game data extracted from the paks / disassembly listings — regenerate locally with the tools, never publish
+extracted-config/
+tools/*.asm
+
+# generated installer payload (contains UE4SS binaries) and build outputs
+BiggerParty/installer/payload/
+BiggerParty/installer/payload.rc
+BiggerParty/installer/payload_index.h
+BiggerParty/installer/build/
+BiggerParty/build/
+
+# binaries are published as GitHub Release assets, not committed
+BiggerParty/dist/BiggerParty-Installer.exe
+BiggerParty/dist/version.dll
+BiggerParty/dist/*.zip
+*.obj
+*.res
+*.exp
+*.lib
+*.pdb
+
+__pycache__/
+*.pyc
