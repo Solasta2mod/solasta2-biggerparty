@@ -32,7 +32,8 @@ Uninstall: run the installer again and press **u**.
 | New Campaign | six character slots |
 | Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots start unassigned — joiners claim them, or the host takes them with the slot's assign button |
 | **Ctrl+Shift+Tab** | toggle the mod on/off (applies to the next new campaign / lobby) |
-| **Ctrl+Shift+End** | re-apply the card layout / camera on the creation screen |
+| Inventory / character sheet | six portraits: Tab or click to switch hero |
+| **Ctrl+Shift+End** | re-apply the UI tweaks on the current screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
@@ -54,8 +55,9 @@ Solasta II hard-codes its party size in exactly four places, all of them entry g
 
 `version.dll` (a proxy loaded by the game exe) flips literals 2–4 in memory at start-up, locating each by
 byte signature. The Lua half (UE4SS) spawns the extra markers, fits the extra cards on screen, widens the
-creation camera, extends the host screen's players selector and re-flows the lobby tiles, and owns the
-on/off toggle (it rewrites the ini; the DLL's watcher thread follows within a second).
+creation camera, extends the host screen's players selector, re-flows the lobby tiles, extends the
+inspection screen's portrait strip (extra portraits, selection ring, click), and owns the on/off toggle
+(it rewrites the ini; the DLL's watcher thread follows within a second).
 
 Full research notes are in [docs-workspace-notes.md](docs-workspace-notes.md).
 

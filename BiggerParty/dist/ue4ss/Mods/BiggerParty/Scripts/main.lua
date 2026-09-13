@@ -1,10 +1,11 @@
 -- BiggerParty — Lua half. Solasta II (Brimstone), UE4SS.
 --
--- The native half (version.dll next to the game exe) patches the three hard-coded party-size literals.
--- This half does the things that are level content or UI:
+-- The native half (version.dll, next to the game exe) patches the four hard-coded party-size literals.
+-- This half handles what is level content or UI:
 --   * spawns extra PartyAvatarSpawn markers in the character-creation level (host only),
---   * shrinks the character cards so all slots fit, widens the creation camera,
---   * adds "5".."N" to the players radio group on the multiplayer host screen,
+--   * shrinks the character cards so all slots fit, and widens the creation camera,
+--   * extends the players selector on the multiplayer host screen to 2..N and re-flows the lobby tiles,
+--   * extends the inspection screen's portrait strip (extra portraits, selection ring and click),
 --   * owns the on/off toggle: it rewrites BiggerParty.ini and the DLL's watcher follows within a second.
 --
 -- Config (Brimstone\Binaries\Win64\BiggerParty.ini, shared with the DLL):
@@ -15,7 +16,7 @@
 --
 -- Hotkeys:
 --   Ctrl+Shift+Tab         toggle Enabled on/off (takes effect for the next new campaign / lobby)
---   Ctrl+Shift+End         re-apply card layout + camera on the current creation screen
+--   Ctrl+Shift+End         re-apply the UI tweaks on the current screen
 --   Ctrl+Shift+Backspace   status report to the UE4SS log (config, DLL log tail, party/slot counts)
 
 local UEHelpers = require("UEHelpers")
@@ -336,6 +337,459 @@ local function ExtendPlayersRadio(screen)
 end
 
 --------------------------------------------------------------------------------------------------
+-- Inspection screen party strip: UPlayerSelectionGroup builds one CharacterPlateExploration plate per
+-- controlled character into CharacterPlatesTable (a HorizontalBox inside the CharacterPlatesSB size
+-- box). With six heroes the plates exist but only four show. Fix both likely causes: widen the size
+-- box, and un-collapse plates. Tab cycling is handled correctly by the game itself.
+--------------------------------------------------------------------------------------------------
+local STRIP_DONE = {}
+
+-- Walk up from the plates table: report every ancestor's slot and widen fixed-size containers.
+-- UMG's UserWidget class object is not always resolvable by path from Lua; fall back to the class-name chain.
+local function IsUserWidget(obj)
+    if not (obj and obj:IsValid()) then return false end
+    local c = StaticFindObject("/Script/UMG.UserWidget")
+    if c and c:IsValid() then local ok, r = pcall(function() return obj:IsA(c) end); if ok then return r end end
+    local k = Try(function() return obj:GetClass() end)
+    for _ = 1, 8 do
+        if not (k and k:IsValid()) then break end
+        if (k:GetFullName():match("([^%.]+)$") or "") == "UserWidget" then return true end
+        k = Try(function() return k:GetSuperStruct() end)
+    end
+    return false
+end
+local ANCESTOR_DONE = {}
+local function FixStripAncestors(tbl, factor, verbose)
+    local canvasSlotClass = StaticFindObject("/Script/UMG.CanvasPanelSlot")
+    local sizeBoxClass = StaticFindObject("/Script/UMG.SizeBox")
+    local w = tbl
+    for depth = 0, 14 do
+        if not (w and w:IsValid()) then break end
+        local slot = Try(function() return w.Slot end)
+        local info = string.format("%s (%s) clip=%s", ShortName(w:GetFullName()), ClassName(w), tostring(Try(function() return w.Clipping end)))
+        if slot and slot:IsValid() then
+            info = info .. " slot=" .. ClassName(slot)
+            if slot:IsA(canvasSlotClass) then
+                local auto = Try(function() return slot:GetAutoSize() end)
+                local size = Try(function() return slot:GetSize() end)
+                local pos = Try(function() return slot:GetPosition() end)
+                info = info .. string.format(" canvas auto=%s size=%s pos=%s", tostring(auto), size and string.format("%.0fx%.0f", size.X, size.Y) or "?", pos and string.format("%.0f,%.0f", pos.X, pos.Y) or "?")
+                if not auto and size and size.X > 0 and factor and not ANCESTOR_DONE[slot:GetAddress()] then
+                    if pcall(function() slot:SetSize({ X = size.X * factor, Y = size.Y }) end) then
+                        ANCESTOR_DONE[slot:GetAddress()] = true
+                        info = info .. string.format(" -> width x%.2f", factor)
+                    end
+                end
+            end
+        end
+        if w:IsA(sizeBoxClass) then
+            local over = Try(function() return w.bOverride_WidthOverride end)
+            local width = Try(function() return w.WidthOverride end) or 0
+            local maxOver = Try(function() return w.bOverride_MaxDesiredWidth end)
+            local maxW = Try(function() return w.MaxDesiredWidth end) or 0
+            info = info .. string.format(" sizebox w=%s%.0f max=%s%.0f", over and "" or "(off)", width, maxOver and "" or "(off)", maxW)
+            if factor and not ANCESTOR_DONE[w:GetAddress()] then
+                if over and width > 0 then pcall(function() w:SetWidthOverride(width * factor) end) end
+                if maxOver and maxW > 0 then pcall(function() w:SetMaxDesiredWidth(maxW * factor) end) end
+                if (over and width > 0) or (maxOver and maxW > 0) then ANCESTOR_DONE[w:GetAddress()] = true; info = info .. string.format(" -> x%.2f", factor) end
+            end
+        end
+        if verbose then Out("   ancestor[%d] %s", depth, info) end
+        local parent = Try(function() return w:GetParent() end)
+        if not (parent and parent:IsValid()) then
+            -- top of this widget's tree: hop to the UserWidget that owns it (root -> WidgetTree -> UserWidget)
+            local tree = Try(function() return w:GetOuter() end)
+            local owner = tree and tree:IsValid() and Try(function() return tree:GetOuter() end)
+            if owner and owner:IsValid() and IsUserWidget(owner) and owner:GetAddress() ~= w:GetAddress() then parent = owner end
+        end
+        w = parent
+    end
+end
+
+
+local function FixPartyStrip(verbose)
+    if not Active() then return end
+    local sizeBoxClass = StaticFindObject("/Script/UMG.SizeBox")
+    for _, grp in ipairs(Instances("PlayerSelectionGroup")) do
+        local visible = Try(function() return grp:IsVisible() end)
+        if visible then
+            local tbl = Try(function() return grp.CharacterPlatesTable end)
+            local sb = Try(function() return grp.CharacterPlatesSB end)
+            local n = tbl and tbl:IsValid() and (Try(function() return tbl:GetChildrenCount() end) or 0) or -1
+            local shown, changed = 0, 0
+            for k = 0, math.max(n, 0) - 1 do
+                local plate = Try(function() return tbl:GetChildAt(k) end)
+                if plate and plate:IsValid() then
+                    local vis = Try(function() return plate:GetVisibility() end)     -- 0 Visible 1 Collapsed 2 Hidden 3 HitTestInvisible 4 SelfHitTestInvisible
+                    if vis == 1 or vis == 2 then
+                        if pcall(function() plate:SetVisibility(4) end) then changed = changed + 1 end
+                    end
+                    if Try(function() return plate:IsVisible() end) then shown = shown + 1 end
+                end
+            end
+            local sbInfo = "no size box"
+            if sb and sb:IsValid() and sb:IsA(sizeBoxClass) then
+                local over = Try(function() return sb.bOverride_WidthOverride end)
+                local width = Try(function() return sb.WidthOverride end) or 0
+                local maxOver = Try(function() return sb.bOverride_MaxDesiredWidth end)
+                local maxW = Try(function() return sb.MaxDesiredWidth end) or 0
+                sbInfo = string.format("size box width=%s%.0f max=%s%.0f", over and "" or "(off)", width, maxOver and "" or "(off)", maxW)
+                if n > 4 and not STRIP_DONE[sb:GetAddress()] then
+                    local f = n / 4
+                    if over and width > 0 then pcall(function() sb:SetWidthOverride(width * f) end) end
+                    if maxOver and maxW > 0 then pcall(function() sb:SetMaxDesiredWidth(maxW * f) end) end
+                    STRIP_DONE[sb:GetAddress()] = true
+                    sbInfo = sbInfo .. string.format(" -> scaled by %.2f", f)
+                end
+            end
+            local first = not STRIP_DONE["logged" .. grp:GetAddress()]
+            if verbose or changed > 0 or first then
+                STRIP_DONE["logged" .. grp:GetAddress()] = true
+                Out("strip: %s plates=%d visible=%d uncollapsed=%d; %s", ShortName(grp:GetFullName()), n, shown, changed, sbInfo)
+            end
+            if n > 4 and tbl and tbl:IsValid() then pcall(FixStripAncestors, tbl, n / 4, verbose or first) end
+        end
+    end
+end
+
+-- Inspection screen portraits: WBP_InspectionPortrait, _1, _2, _3 are placed by hand in the Blueprint
+-- (the merchant and chest screens carry their own copies). Enumerate the Blueprint class's variables and
+-- functions through reflection to learn how a portrait is told which hero it shows, and extend only the
+-- strip that lives inside the visible inspection screen.
+local PORTRAITS_DONE = {}
+
+-- Is this widget inside the given screen (walk parents, hopping through owning UserWidgets)?
+local function IsInsideWidget(w, screen)
+    for _ = 1, 30 do
+        if not (w and w:IsValid()) then return false end
+        if w:GetAddress() == screen:GetAddress() then return true end
+        local parent = Try(function() return w:GetParent() end)
+        if not (parent and parent:IsValid()) then
+            local tree = Try(function() return w:GetOuter() end)
+            local owner = tree and tree:IsValid() and Try(function() return tree:GetOuter() end)
+            if owner and owner:IsValid() and IsUserWidget(owner) and owner:GetAddress() ~= w:GetAddress() then parent = owner end
+        end
+        w = parent
+    end
+    return false
+end
+
+local function InspectionPortraitsIn(screen)
+    local out = {}
+    for _, w in ipairs(Instances("UserWidget")) do
+        if ShortName(w:GetFullName()):match("^WBP_InspectionPortrait") and IsInsideWidget(w, screen) then out[#out + 1] = w end
+    end
+    table.sort(out, function(a, b) return a:GetFullName() < b:GetFullName() end)
+    return out
+end
+
+local PORTRAIT_BOUND = {}
+local function BindExtraPortrait(widget, heroIndex)      -- heroIndex is 0-based into PartyComponent.Party
+    -- portraits are captured asynchronously and the manager can hand back a shared/placeholder texture at
+    -- first, so keep re-applying until the same texture has been seen a few times in a row.
+    local key = widget:GetAddress()
+    if PORTRAIT_BOUND[key] and (PORTRAIT_BOUND["stable" .. key] or 0) >= 3 then return true end
+    local party = nil
+    for _, pc in ipairs(Instances("PartyComponent")) do party = Try(function() return pc.Party end) if party then break end end
+    local hero = party and party[heroIndex + 1]
+    if not (hero and hero:IsValid()) then return false end
+    local guiClass = StaticFindObject("/Script/Brimstone.GuiRulesetActorComponent")
+    local comp = Try(function() return hero:GetComponentByClass(guiClass) end)
+    if not (comp and comp:IsValid()) then Out("inspect: %s has no GuiRulesetActorComponent", ShortName(hero:GetFullName())) return false end
+    local tex = Try(function() return comp:GetPortraitTexture() end)
+    if not (tex and tex:IsValid()) then
+        -- portraits are rendered on demand: ask the manager (returns the cached texture, or starts a capture)
+        for _, mgr in ipairs(Instances("PortraitManagerComponent")) do
+            local t = Try(function() return mgr:RequestPortrait(hero) end)
+            if t and t:IsValid() then tex = t break end
+        end
+    end
+    if not (tex and tex:IsValid()) then
+        if not PORTRAIT_BOUND["warned" .. widget:GetAddress()] then
+            PORTRAIT_BOUND["warned" .. widget:GetAddress()] = true
+            Out("inspect: no portrait texture yet for %s (requested; retrying each second)", ShortName(hero:GetFullName()))
+        end
+        return false
+    end
+    local img = nil
+    ForEachWidget(widget, function(w) if not img and ShortName(w:GetFullName()) == "PortraitImg" then img = w end end)
+    if not img then Out("inspect: PortraitImg not found inside %s", ShortName(widget:GetFullName())) return false end
+
+    -- What does an original portrait's image hold? Mirror that: same brush, same image size, and if it
+    -- is a dynamic material, a fresh instance of the same parent material with our texture as parameter.
+    local origImg = nil
+    for _, w in ipairs(Instances("UserWidget")) do
+        if ShortName(w:GetFullName()) == "WBP_InspectionPortrait" then
+            ForEachWidget(w, function(c) if not origImg and ShortName(c:GetFullName()) == "PortraitImg" then origImg = c end end)
+            if origImg then break end
+        end
+    end
+    local origRes = origImg and Try(function() return origImg.Brush.ResourceObject end)
+    local origSize = origImg and Try(function() return origImg.Brush.ImageSize end)
+    local resClass = (origRes and origRes.IsValid and origRes:IsValid()) and ClassName(origRes) or "none"
+    if not PORTRAIT_BOUND["brushinfo"] then
+        PORTRAIT_BOUND["brushinfo"] = true
+        Out("inspect: original PortraitImg brush: resource=%s (%s) size=%s", origRes and origRes.IsValid and origRes:IsValid() and ShortName(origRes:GetFullName()) or "none", resClass,
+            origSize and string.format("%.0fx%.0f", origSize.X, origSize.Y) or "?")
+    end
+    local ok, err
+    if resClass == "MaterialInstanceDynamic" or resClass:match("^Material") then
+        -- Prefer the extra portrait's OWN dynamic material (the circle widget creates one at construction and
+        -- keeps a reference for SetSelected); only create a new one if it has none.
+        local mid = Try(function() return img.Brush.ResourceObject end)
+        local own = mid and mid.IsValid and mid:IsValid() and ClassName(mid) == "MaterialInstanceDynamic"
+        -- a material shared with another portrait would make both show the same face
+        if own then
+            local addr = mid:GetAddress()
+            local holder = PORTRAIT_BOUND["mid" .. addr]
+            if holder and holder ~= key then own = false; Out("inspect: portrait %d shares material %s — creating its own", heroIndex + 1, ShortName(mid:GetFullName()))
+            else PORTRAIT_BOUND["mid" .. addr] = key end
+        end
+        if not own then
+            local mlib = StaticFindObject("/Script/Engine.Default__KismetMaterialLibrary")
+            local parent = Try(function() return origRes.Parent end)
+            if not (parent and parent:IsValid()) then parent = origRes end
+            mid = Try(function() return mlib:CreateDynamicMaterialInstance(img, parent, FName("None"), 0) end)
+            if not (mid and mid:IsValid()) then Out("inspect: could not create a material instance from %s", ShortName(parent:GetFullName())) return false end
+            PORTRAIT_BOUND["mid" .. mid:GetAddress()] = key
+        end
+        -- take the parameter name from an original portrait's material: a MID stores overrides even for
+        -- names the material does not have, so a read-back check cannot tell a real parameter from a typo.
+        local paramSet = PORTRAIT_BOUND["paramname"]
+        if not paramSet then
+            local tpv = Try(function() return origRes.TextureParameterValues end)
+            for t = 1, Count(tpv) do
+                local pname = Try(function() return tpv[t].ParameterInfo.Name:ToString() end)
+                local pval = Try(function() return tpv[t].ParameterValue end)
+                if pname and pval and pval.IsValid and pval:IsValid() then paramSet = pname break end
+            end
+            paramSet = paramSet or "PortraitTexture"
+            PORTRAIT_BOUND["paramname"] = paramSet
+        end
+        local okp = pcall(function() mid:SetTextureParameterValue(FName(paramSet), tex) end)
+        if not okp then Out("inspect: could not set %s on %s", paramSet, ShortName(parent:GetFullName())) return false end
+        if own then ok = true else ok, err = pcall(function() img:SetBrushFromMaterial(mid) end) end
+        if ok and not PORTRAIT_BOUND["paraminfo"] then PORTRAIT_BOUND["paraminfo"] = true; Out("inspect: portrait material parameter = %s (%s material)", paramSet, own and "own" or "new") end
+    else
+        ok, err = pcall(function() img:SetBrushFromTexture(tex, false) end)
+    end
+    if not ok then Out("inspect: setting the portrait brush failed: %s", tostring(err)) return false end
+    if origSize and origSize.X > 0 then pcall(function() img:SetDesiredSizeOverride({ X = origSize.X, Y = origSize.Y }) end) end
+    -- mirror the child visibility states of an original portrait (hides the "?" placeholder etc.)
+    local original = nil
+    for _, w in ipairs(Instances("UserWidget")) do
+        if ShortName(w:GetFullName()) == "WBP_InspectionPortrait" and IsInsideWidget(w, Try(function() return widget:GetParent() end) or widget) then original = w break end
+    end
+    if not original then
+        for _, w in ipairs(Instances("UserWidget")) do if ShortName(w:GetFullName()) == "WBP_InspectionPortrait" then original = w break end end
+    end
+    if original then
+        local states = {}
+        ForEachWidget(original, function(w) states[ShortName(w:GetFullName())] = Try(function() return w:GetVisibility() end) end)
+        local applied = 0
+        ForEachWidget(widget, function(w)
+            local name = ShortName(w:GetFullName())
+            local vis = states[name]
+            if vis ~= nil and name ~= "PortraitImg" and Try(function() return w:GetVisibility() end) ~= vis then
+                if pcall(function() w:SetVisibility(vis) end) then applied = applied + 1 end
+            end
+        end)
+        if applied > 0 then Out("inspect: mirrored %d child visibility state(s) from the first portrait", applied) end
+    end
+    local texKey = tex:GetAddress()
+    if PORTRAIT_BOUND["tex" .. key] == texKey then
+        PORTRAIT_BOUND["stable" .. key] = (PORTRAIT_BOUND["stable" .. key] or 0) + 1
+    else
+        PORTRAIT_BOUND["tex" .. key] = texKey
+        PORTRAIT_BOUND["stable" .. key] = 1
+        Out("inspect: portrait %d now shows %s (texture %s)", heroIndex + 1, ShortName(hero:GetFullName()), ShortName(tex:GetFullName()))
+    end
+    PORTRAIT_BOUND[key] = true
+    return true
+end
+
+local function ExtendInspectionPortraits(verbose)
+    if not Active() then return end
+    local nHeroes = 0
+    for _, pc in ipairs(Instances("PartyComponent")) do nHeroes = math.max(nHeroes, Count(Try(function() return pc.Party end))) end
+    if nHeroes <= 4 then return end
+    for _, screen in ipairs(Instances("InspectionScreen")) do
+        if Try(function() return screen:IsVisible() end) then
+            local portraits = InspectionPortraitsIn(screen)
+            if #portraits > 0 then
+                local last = portraits[#portraits]
+                local parent = Try(function() return last:GetParent() end)
+                if parent and parent:IsValid() then
+                    local n = Try(function() return parent:GetChildrenCount() end) or 0
+                    for k = 4, n - 1 do
+                        local w = Try(function() return parent:GetChildAt(k) end)
+                        if w and w:IsValid() then pcall(BindExtraPortrait, w, k) end
+                    end
+                end
+                if parent and parent:IsValid() and not PORTRAITS_DONE[parent:GetAddress()] then
+                    local existing = Try(function() return parent:GetChildrenCount() end) or #portraits
+                    if existing < nHeroes then
+                        local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+                        local pc = UEHelpers.GetPlayerController()
+                        local cls = last:GetClass()
+                        local added = 0
+                        for k = existing, nHeroes - 1 do
+                            local ok, err = pcall(function()
+                                local w = lib:Create(last, cls, pc)
+                                if not (w and w:IsValid()) then error("Create returned nothing") end
+                                parent:AddChild(w)
+                                local srcSlot, dstSlot = Try(function() return last.Slot end), Try(function() return w.Slot end)
+                                local pad = srcSlot and Try(function() return srcSlot.Padding end)
+                                if pad and dstSlot then pcall(function() dstSlot:SetPadding({ Left = pad.Left, Top = pad.Top, Right = pad.Right, Bottom = pad.Bottom }) end) end
+                                added = added + 1
+                            end)
+                            if not ok then Out("inspect: could not add portrait %d: %s", k + 1, tostring(err)) break end
+                        end
+                        PORTRAITS_DONE[parent:GetAddress()] = true
+                        Out("inspect: portraits %d -> %d in %s (%s) — unbound until the Blueprint's bind call is known", existing, existing + added, ShortName(parent:GetFullName()), ClassName(parent))
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Selection ring for the extra portraits: the game calls WBP_PortraitSmallCircle:SetSelected on its four;
+-- do the same for ours from the inspection view model's CurrentInspectionIndex.
+local EXTRA_SELECTED = {}
+SETSELECTED_ARG = function(want) return want end   -- WBP_PortraitSmallCircle_C:SetSelected(bIsSelected: bool)
+local function UpdateExtraHighlights()
+    if not Active() then return end
+    for _, screen in ipairs(Instances("InspectionScreen")) do
+        if Try(function() return screen:IsVisible() end) then
+            -- which hero is inspected: the screen's bound GUI component -> its owner -> index in the party
+            local comp = Try(function() return screen:GetGuiRulesetActor() end)
+            local owner = comp and comp:IsValid() and Try(function() return comp:GetOwner() end)
+            local idx = nil
+            if owner and owner:IsValid() then
+                for _, pc in ipairs(Instances("PartyComponent")) do
+                    local party = Try(function() return pc.Party end)
+                    for i = 1, Count(party) do
+                        local m = party[i]
+                        if m and m:IsValid() and m:GetAddress() == owner:GetAddress() then idx = i - 1 break end
+                    end
+                    if idx then break end
+                end
+            end
+            if idx == nil then return end
+            local portraits = InspectionPortraitsIn(screen)
+            if #portraits > 4 then
+                local parent = Try(function() return portraits[#portraits]:GetParent() end)
+                local n = parent and parent:IsValid() and (Try(function() return parent:GetChildrenCount() end) or 0) or 0
+                for k = 4, n - 1 do
+                    local w = Try(function() return parent:GetChildAt(k) end)
+                    if w and w:IsValid() then
+                        local want = (k == idx)
+                        if EXTRA_SELECTED[w:GetAddress()] ~= want then
+                            local circle = nil
+                            ForEachWidget(w, function(c) if not circle and ShortName(c:GetFullName()) == "WBP_PortraitSmallCircle" then circle = c end end)
+                            if circle and SETSELECTED_ARG then
+                                local ok, err = pcall(function() circle:SetSelected(SETSELECTED_ARG(want, w)) end)
+                                if ok then EXTRA_SELECTED[w:GetAddress()] = want
+                                else Out("inspect: SetSelected failed: %s", tostring(err)) end
+                            elseif not circle then Out("inspect: no circle widget inside portrait %d", k + 1) end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+-- Click discovery (light): does the screen override a mouse event, and does a click reach InspectionScreen:Bind?
+local BIND_FLAG = false   -- the flag the game itself passes to InspectionScreen:Bind on a portrait click
+-- Emulated click on the extra portraits: the game's own portraits end in InspectionScreen:Bind(component, flag);
+-- on a left click, if an extra portrait is hovered, make the same call for its hero.
+local function ClickExtraPortraits()
+    if not Active() then return end
+    for _, screen in ipairs(Instances("InspectionScreen")) do
+        if Try(function() return screen:IsVisible() end) then
+            local portraits = InspectionPortraitsIn(screen)
+            if #portraits <= 4 then return end
+            -- which hero is currently inspected (its enlarged portrait may still sit under the cursor)
+            local curIdx = nil
+            local comp0 = Try(function() return screen:GetGuiRulesetActor() end)
+            local owner0 = comp0 and comp0:IsValid() and Try(function() return comp0:GetOwner() end)
+            local party = nil
+            for _, pc in ipairs(Instances("PartyComponent")) do party = Try(function() return pc.Party end) if party then break end end
+            if owner0 and owner0:IsValid() and party then
+                for i = 1, Count(party) do local m = party[i]; if m and m:IsValid() and m:GetAddress() == owner0:GetAddress() then curIdx = i - 1 break end end
+            end
+            local parent = Try(function() return portraits[#portraits]:GetParent() end)
+            local n = parent and parent:IsValid() and (Try(function() return parent:GetChildrenCount() end) or 0) or 0
+            for k = 4, n - 1 do
+                local w = Try(function() return parent:GetChildAt(k) end)
+                if w and w:IsValid() and k ~= curIdx and Try(function() return w:IsHovered() end) then
+                    local hero = party and party[k + 1]
+                    if hero and hero:IsValid() then
+                        local guiClass = StaticFindObject("/Script/Brimstone.GuiRulesetActorComponent")
+                        local comp = Try(function() return hero:GetComponentByClass(guiClass) end)
+                        if comp and comp:IsValid() then
+                            local ok, err = pcall(function() screen:Bind(comp, BIND_FLAG) end)
+                            if not ok then Out("click: portrait %d Bind failed: %s", k + 1, tostring(err)) end
+                            if ok then pcall(UpdateExtraHighlights) end
+                        end
+                    end
+                    return
+                end
+            end
+        end
+    end
+end
+
+local okM, errM = pcall(function()
+    RegisterKeyBind(Key.LEFT_MOUSE_BUTTON, function()
+        ExecuteInGameThread(function() pcall(ClickExtraPortraits) end)
+    end)
+end)
+if not okM then Out("click: could not bind the left mouse button: %s", tostring(errM)) end
+
+local function InspectionDiagnostics()
+    for _, pc in ipairs(Instances("PartyComponent")) do
+        Out("inspect: Party=%d PartySubgroups=%d", Count(Try(function() return pc.Party end)), Count(Try(function() return pc.PartySubgroups end)))
+    end
+    for _, grp in ipairs(Instances("PlayerSelectionGroup")) do
+        local tbl = Try(function() return grp.CharacterPlatesTable end)
+        Out("inspect: %s visible=%s table=%s children=%s", ShortName(grp:GetFullName()), tostring(Try(function() return grp:IsVisible() end)),
+            tbl and tbl:IsValid() and ClassName(tbl) or "?", tostring(tbl and tbl:IsValid() and Try(function() return tbl:GetChildrenCount() end)))
+        local n = tbl and tbl:IsValid() and (Try(function() return tbl:GetChildrenCount() end) or 0) or 0
+        for k = 0, n - 1 do
+            local plate = Try(function() return tbl:GetChildAt(k) end)
+            if plate and plate:IsValid() then
+                local size = Try(function() return plate:GetDesiredSize() end)
+                Out("   plate[%d] %s vis=%s isVisible=%s desired=%s", k, ClassName(plate), tostring(Try(function() return plate:GetVisibility() end)),
+                    tostring(Try(function() return plate:IsVisible() end)), size and string.format("%.0fx%.0f", size.X, size.Y) or "?")
+            end
+        end
+    end
+    pcall(FixPartyStrip, true)
+    pcall(ExtendInspectionPortraits, true)
+    -- dump the inspection screen's widget tree (class counts + any widget whose name smells like a party strip)
+    for _, screen in ipairs(Instances("InspectionScreen")) do
+        local classes, interesting, total = {}, {}, 0
+        ForEachWidget(screen, function(w)
+            total = total + 1
+            local c = ClassName(w); classes[c] = (classes[c] or 0) + 1
+            local name = ShortName(w:GetFullName())
+            if name:match("[Pp]ortrait") or name:match("[Pp]arty") or name:match("[Hh]ero") or name:match("[Tt]ab") or c:match("Portrait") or c:match("Party") or c:match("Plate") or c:match("Selector") then
+                local n = Try(function() return w:GetChildrenCount() end)
+                interesting[#interesting + 1] = string.format("%s (%s)%s", name, c, n and (" children=" .. n) or "")
+            end
+        end)
+        Out("inspect: %s widget tree: %d widgets", ShortName(screen:GetFullName()), total)
+        local list = {}
+        for c, n in pairs(classes) do list[#list + 1] = string.format("%s x%d", c, n) end
+        table.sort(list)
+        Out("   classes: %s", table.concat(list, ", "))
+        for _, line in ipairs(interesting) do Out("   %s", line) end
+    end
+end
+
+--------------------------------------------------------------------------------------------------
 -- Status report
 --------------------------------------------------------------------------------------------------
 local function Report()
@@ -366,6 +820,7 @@ local function Report()
     for _, pc in ipairs(Instances("PartyComponent")) do
         Out("party: %d members", Count(Try(function() return pc.Party end)))
     end
+    pcall(InspectionDiagnostics)
 end
 
 --------------------------------------------------------------------------------------------------
@@ -405,6 +860,14 @@ for _, cls in ipairs({ "/Script/Brimstone.SessionSetupScreen", "/Script/Brimston
     if not okC then Out("FAIL NotifyOnNewObject %s: %s", cls, tostring(errC)) end
 end
 
+-- The inspection screen is created once and reused, so poll while its strip is visible (cheap).
+LoopAsync(1000, function()
+    ExecuteInGameThread(function()
+        if Active() then pcall(FixPartyStrip, false); pcall(ExtendInspectionPortraits, false); pcall(UpdateExtraHighlights) end
+    end)
+    return false
+end)
+
 RegisterKeyBind(Key.TAB, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
     ReadConfig()
     local newState = not CFG.Enabled
@@ -422,6 +885,8 @@ RegisterKeyBind(Key.END, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
         for _, s in ipairs(Instances("MultiplayerOptionsScreen")) do pcall(ExtendPlayersRadio, s) end
         for _, s in ipairs(Instances("SessionSetupScreen")) do pcall(FixPlayerTiles, s) end
         for _, s in ipairs(Instances("MultiplayerSettingsScreen")) do pcall(FixPlayerTiles, s) end
+        pcall(FixPartyStrip, true)
+        pcall(ExtendInspectionPortraits, true)
         Out("re-applied layout/camera/host-screen tweaks")
     end)
 end)

@@ -1,4 +1,4 @@
-BiggerParty 1.0 for Solasta II (Early Access build CL-112340)
+BiggerParty 1.1 for Solasta II (Early Access build CL-112340)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.
@@ -13,7 +13,8 @@ INSTALL (one click)
   Everyone in a multiplayer session installs the same way.
 
 IN GAME
-  New Campaign        -> six character slots (all "Create Character")
+  New Campaign        -> six character slots
+  Inventory/character -> six portraits (Tab or click to switch hero) (all "Create Character")
   Multiplayer > Host  -> "Players" offers 2..6
   Ctrl+Shift+Tab        toggle the mod on/off (applies to the next new campaign / lobby)
   Ctrl+Shift+End        re-apply the card layout / camera on the creation screen
