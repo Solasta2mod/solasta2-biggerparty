@@ -37,3 +37,10 @@ PartyProbe (disabled in mods.txt) is the research version; keep for reference.
 and generates `payload.rc`/`payload_index.h`; `build.bat` builds `dist/BiggerParty-Installer.exe` (MSVC, resources embedded).
 Flags: /install /uninstall /spellbook /silent /game "<folder>". Tested on a fake game folder: install, update (ini kept), uninstall.
 Share `dist/BiggerParty-1.0.zip` (installer + README). NOTE: never run the exe from Git Bash — MSYS rewrites "/install" into a path.
+
+### v1.1 verification (2026-09-13)
+Installer tested end to end against a throwaway copy of the game folder (exe only):
+fresh install (27 files, UE4SS + BiggerParty + GiveSpellbook, mods.txt rewritten), update over an existing
+install (4 files, BiggerParty.ini preserved), uninstall (nothing left behind but the exe). The embedded
+`main.lua` / `version.dll` hash-match the copies verified in-game. The installer refuses to run while
+Solasta II is open — that guard fired during the first attempt, which is intended.
