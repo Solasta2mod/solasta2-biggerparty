@@ -4,6 +4,10 @@ An unofficial mod for **Solasta II** (Early Access, build CL-112340) that lets a
 six heroes and a hosted multiplayer lobby seat up to six players. Existing saves are untouched: a
 4-hero save loads exactly as vanilla.
 
+| Host screen: players 2–6 | Lobby: six seats | Party creation: six slots |
+|---|---|---|
+| ![host screen with Maximum Players 6](docs/host-screen-6-players.jpg) | ![six-seat lobby](docs/lobby-6-seats.jpg) | ![six character slots in multiplayer party creation](docs/party-creation-6-slots-multiplayer.jpg) |
+
 Also included: **GiveSpellbook**, a small fix for the multiplayer bug where multiclassing into Wizard
 does not grant the spellbook.
 
@@ -26,7 +30,7 @@ Uninstall: run the installer again and press **u**.
 | | |
 |---|---|
 | New Campaign | six character slots |
-| Multiplayer → Host | the *Players* selector offers 2–6 |
+| Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots wait for players to claim them |
 | **Ctrl+Shift+Tab** | toggle the mod on/off (applies to the next new campaign / lobby) |
 | **Ctrl+Shift+End** | re-apply the card layout / camera on the creation screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
