@@ -21,3 +21,6 @@ BiggerParty/dist/*.zip
 
 __pycache__/
 *.pyc
+
+# private working notes, kept outside the repo
+docs-workspace-notes.md

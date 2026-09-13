@@ -59,7 +59,7 @@ creation camera, extends the host screen's players selector, re-flows the lobby 
 inspection screen's portrait strip (extra portraits, selection ring, click), and owns the on/off toggle
 (it rewrites the ini; the DLL's watcher thread follows within a second).
 
-Full research notes are in [docs-workspace-notes.md](docs-workspace-notes.md).
+How it all works, and how to re-sign the patches after a game update: [docs/internals.md](docs/internals.md).
 
 ## Building from source
 
