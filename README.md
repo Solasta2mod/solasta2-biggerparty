@@ -30,7 +30,7 @@ Uninstall: run the installer again and press **u**.
 | | |
 |---|---|
 | New Campaign | six character slots |
-| Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots wait for players to claim them |
+| Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots start unassigned — joiners claim them, or the host takes them with the slot's assign button |
 | **Ctrl+Shift+Tab** | toggle the mod on/off (applies to the next new campaign / lobby) |
 | **Ctrl+Shift+End** | re-apply the card layout / camera on the creation screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
