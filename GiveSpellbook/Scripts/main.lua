@@ -174,15 +174,19 @@ local function Grant(force)
     end
 end
 
-RegisterKeyBind(Key.BACKSPACE, { ModifierKey.CONTROL }, function()
-    ExecuteInGameThread(Report)
-end)
-RegisterKeyBind(Key.DEL, { ModifierKey.CONTROL }, function()
-    ExecuteInGameThread(function() Grant(false) end)
-end)
-RegisterKeyBind(Key.DEL, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
-    ExecuteInGameThread(function() Grant(true) end)
-end)
+-- Key-bind callbacks run on UE4SS's input thread, which holds no lock against the game thread's Lua; a Lua
+-- state used from two threads corrupts its heap. So a key bind only sets a flag, and a game-thread poll acts.
+local PRESSED = { report = false, grant = false, force = false }
+RegisterKeyBind(Key.BACKSPACE, { ModifierKey.CONTROL }, function() PRESSED.report = true end)
+RegisterKeyBind(Key.DEL, { ModifierKey.CONTROL }, function() PRESSED.grant = true end)
+RegisterKeyBind(Key.DEL, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.force = true end)
+local function Poll()
+    if PRESSED.report then PRESSED.report = false; pcall(Report) end
+    if PRESSED.grant then PRESSED.grant = false; pcall(Grant, false) end
+    if PRESSED.force then PRESSED.force = false; pcall(Grant, true) end
+end
+if LoopInGameThreadWithDelay then LoopInGameThreadWithDelay(50, Poll)
+else LoopAsync(50, function() ExecuteInGameThread(Poll) return false end) end
 
 -- Sanity check that the functions we depend on exist in this game build.
 for _, path in ipairs({

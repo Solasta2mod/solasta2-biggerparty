@@ -1,6 +1,6 @@
 # BiggerParty — 6-hero parties and 6-player co-op for Solasta II
 
-An unofficial mod for **Solasta II** (Early Access, build CL-112340) that lets a new campaign have up to
+An unofficial mod for **Solasta II** (Early Access, builds CL-112340 and CL-112436 — the 14 Sep 2026 patch) that lets a new campaign have up to
 six heroes and a hosted multiplayer lobby seat up to six players. Existing saves are untouched: a
 4-hero save loads exactly as vanilla.
 
@@ -53,6 +53,10 @@ without a book.
   the chosen option through party member #1. While a dialogue runs, the mod moves the first participating
   hero to slot #1 and possesses them, then restores the party order when the dialogue ends. You may notice
   the party strip reorder briefly during scenes.
+- **Party following.** After story scenes the mod hands control back to the hero you had selected, through
+  the game's own selection, so the party keeps following you. If a follower ever loses track of the leader
+  and wanders, the mod notices within two seconds and re-selects your hero (you may see the selection flick
+  to another hero and back once).
 - **Players versus heroes.** `PartySize` is the number of heroes; `MaxPlayers` (in `BiggerParty.ini`) is
   the number of human players a hosted session accepts and defaults to `PartySize`. Set `MaxPlayers=4` to
   keep the vanilla four-seat lobby with a six-hero party.

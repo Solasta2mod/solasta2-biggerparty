@@ -2,7 +2,8 @@
 
 How BiggerParty works, and what to do when a game patch breaks it.
 
-Everything below was derived from the shipping build **CL-112340** (Solasta II Early Access, 2026-09-10,
+Everything below was derived from the shipping build **CL-112340** (Solasta II Early Access, 2026-09-10; the
+14 Sep 2026 patch, **CL-112436**, kept every signature and class name used here —
 Unreal Engine 5.6.1, internal project name `Brimstone`). Tactical Adventures ship full debug symbols
 (`Brimstone-Win64-Shipping.pdb`) next to the executable, which is what made this tractable — no signature
 guessing was needed to find the functions, only to locate them at runtime.
@@ -61,6 +62,35 @@ Everything that is level content or UI, none of which can be done by patching a 
 
 Source: [`BiggerParty/dist/ue4ss/Mods/BiggerParty/Scripts/main.lua`](../BiggerParty/dist/ue4ss/Mods/BiggerParty/Scripts/main.lua).
 
+## Threads: everything on the game thread
+
+UE4SS runs `LoopAsync` and `ExecuteWithDelay` callbacks on its own async thread, and key-bind callbacks on
+its input thread. Of all the paths that run a mod's Lua, only the key-bind one takes UE4SS's
+`m_thread_actions_mutex`; hooks, `ExecuteInGameThread` actions and the game-thread timers run without it,
+and the async path takes no lock at all (`LuaMod::process_delayed_actions`). A Lua state is not thread-safe,
+and two threads inside one state for even a few microseconds — creating the closure handed to
+`ExecuteInGameThread` is enough — corrupt its heap. That was the "crash dump when looting" and the earlier
+random crash during the 1.2.1 work: both minidumps died inside UE4SS.dll with garbage in the Lua stack, one
+in the garbage collector on a `Proto` whose upvalue-name pointer was `2`, one in the `__index` metamethod on
+a userdata that had lost its metamethod container. The crashing thread was the game thread inside the mod's
+one-second pass, which is at its heaviest while a screen full of widgets (a loot bag) is open, and the mod's
+async timers and mouse key bind were the other side of the race.
+
+The rule in `main.lua`: nothing runs off the game thread. Timers go through the `Every`/`After` helpers,
+which use `LoopInGameThreadWithDelay`/`ExecuteInGameThreadWithDelay` (present in the bundled UE4SS build;
+the helpers fall back to the async calls if a build lacks them), and key binds only set a field of a
+pre-built table that a 50 ms game-thread poll reads — a write into an existing key allocates nothing, which is
+as little Lua as a key bind can do. Do not add `LoopAsync`, `ExecuteWithDelay`, or work inside a
+`RegisterKeyBind` callback.
+
+Reading a crash without a debugger: `tools/minidump.py <dmp>` prints the exception, the registers, the
+module bases and a return-address scan of the crashing thread's stack; `tools/pdb_pubs_scan.py` (once, about
+15 s) followed by `tools/pdb_addr.py <rva>...` names the game frames; `tools/ue4ss_fn.py <UE4SS.dll> <rva>...`
+prints a UE4SS function's bounds and the strings it references (UE4SS ships no PDB, so its error strings are
+what identify a function); `tools/luawalk.py <dmp>` walks the Lua call stack and prints the values around
+the top when the state's memory made it into the dump. The UE4SS source on GitHub then explains what the
+function does with them.
+
 ## The inspection screen portrait strip
 
 The four portraits in that screen are hand-placed `WBP_InspectionPortrait` widgets in the screen Blueprint,
@@ -78,6 +108,20 @@ are worth writing down:
   `InspectionScreen:Bind(guiComponent, false)`. On a left click the mod finds the hovered extra portrait and
   makes the same call — skipping the currently-selected portrait, because the selected one is enlarged and
   would otherwise swallow a click aimed at its neighbour.
+
+The chest, loot-bag and merchant screens carry the same kind of strip with a different template
+(`WBP_PortraitSmallCircle_WithEncumbrance`) and other widgets in the same row (the Tab badge, the weight icon), so
+the extra portraits are tracked by widget rather than by child index, and anything that sat after the last
+original portrait is moved back to the end of the row. Those screens follow the party selection: the ring
+comes from `BrimstoneSelectionStateComponent:GetSelectedCharacter` and a click is `SelectCharacter(pawn, pc, true, true)`.
+Selection alone is not enough there: the chest Blueprint binds each of its portraits to a hero through the
+portrait's own `BindToGameplay(RulesetActor)` (that hangs the `CharacterSummaryViewModel` behind the
+carried-weight gauge on it), and a click on one of its portraits runs the screen's
+`OnPortraitClicked(BoundRulesetActor)`, which makes that hero the looter. The mod calls both on the extra
+portraits, reading the parameter list off the `UFunction` at run time (`FunctionOf` / `ParamsOf` /
+`CallByParams` in `main.lua`) and passing the hero or the widget by parameter type, so a renamed parameter
+in a patch shows up in the log instead of a silent no-op. `Ctrl+Shift+Backspace` with a loot bag open dumps
+the portrait and screen classes with property values and function signatures.
 
 ## Story dialogues with more than four heroes
 
@@ -109,6 +153,30 @@ Two dead ends worth recording so nobody repeats them: the multiplayer *vote pane
 is for rests, checkpoints and fast travel, not dialogue choices; and pre-assigning family roles to the extra
 heroes does not help — the scene's participant count is what matters, not the roles.
 
+## Party formation with more than four heroes
+
+Followers walk to *anchors* that the formation manager arranges around the party leader, and each follower's
+AI keeps its own idea of who the leader is (`ABrimstoneAIController::GetLeaderToFollow`). That leader is
+refreshed only by the game's selection path (`UBrimstoneSelectionStateComponent::SelectActor`), never by a
+possession change on its own. The mod's raw `Possess` at dialogue start therefore left every follower with a
+stale leader; the hero who was still recorded as leader followed anchors arranged around *himself* — which
+looks like an NPC wandering at random — until any selection change put things right.
+
+Two fixes: after a dialogue the mod hands control back through `SelectCharacter` as a *real* change (to the
+hero selected before the scene), and a two-second watchdog compares each follower's `GetLeaderToFollow()`
+with the controlled pawn and, on a mismatch, performs a selection switch to another hero and back (a
+programmatic Tab), at most every ten seconds and never during a dialogue.
+
+Two things that must not be done, both learned the hard way: do not call the formation manager's
+`PossessedPawnChanged` or hand-assign anchors (`SetAnchorToFollow` / `FollowingActor`) from Lua. The game
+frees and re-spawns its anchors on the next real selection change, an AI left pointing at a destroyed anchor
+crashes the game about half a minute later, and neither call refreshes the followers' leader anyway.
+
+Also worth knowing: `ReassignAnchors` only has designed formation slots for three followers; the fourth and
+fifth are assigned in a plain loop, and the anchor count comes from the party, so six heroes do get six
+anchors — the missing-anchor symptom seen during the investigation was a consequence of the stale leader,
+not of the anchor count.
+
 ## Re-signing after a game patch
 
 1. Point the tools at the new build and confirm each signature still matches exactly once:
@@ -136,6 +204,10 @@ Python 3, no third-party dependencies except `capstone` for the disassembler.
 | `vtable.py` | read a vtable slot from the exe and map it back to a PDB symbol (resolves virtual calls in disassembly) |
 | `pak_index.py` / `pak_read.py` | parse and extract the unencrypted `Brimstone-Windows.pak` (set `OODLE_DLL` to any `oo2core_*_win64.dll`) |
 | `utoc_index.py` | parse the IoStore `.utoc` directory index to list cooked asset paths |
+| `minidump.py` | crash dump triage: exception, registers, module bases, return-address scan of the crashing thread |
+| `pdb_pubs_scan.py` / `pdb_addr.py` | build a lookup of every public symbol once, then name game-exe addresses (RVA) from a dump |
+| `ue4ss_fn.py` | function bounds (from `.pdata`) and referenced strings for addresses inside UE4SS.dll |
+| `luawalk.py` / `dumplib.py` | walk the Lua call stack inside a minidump (frames, current line, values near the top) |
 
 Two gotchas worth keeping: UE4SS Lua `TArray` appends invalidate element references taken before the append
 (hold values, not references), and `RegisterHook` only sees functions called through `ProcessEvent` — a

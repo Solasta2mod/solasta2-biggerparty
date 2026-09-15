@@ -45,6 +45,40 @@ end
 local function ClassName(o) local ok, s = pcall(function() return o:GetClass():GetFullName() end); return ok and (s:match("([^%.]+)$") or s) or "?" end
 
 --------------------------------------------------------------------------------------------------
+-- Scheduling. Everything the mod does runs on the game thread. UE4SS executes LoopAsync/ExecuteWithDelay
+-- callbacks on its own thread and key-bind callbacks on its input thread, without the lock the game-thread
+-- paths hold; two threads inside one Lua state corrupt its heap (random crashes, worst while a screen full
+-- of widgets is open). So timers use the game-thread variants, and key binds only raise a flag that a
+-- game-thread poll picks up.
+--------------------------------------------------------------------------------------------------
+local function Every(ms, fn)      -- fn runs on the game thread every ms; return true from fn to stop
+    if LoopInGameThreadWithDelay then
+        local handle
+        handle = LoopInGameThreadWithDelay(ms, function()
+            local ok, stop = pcall(fn)
+            if not ok then Out("timer error: %s", tostring(stop)) end
+            if ok and stop and handle and CancelDelayedAction then pcall(CancelDelayedAction, handle) end
+        end)
+        return handle
+    end
+    local stopped = false            -- older UE4SS without game-thread timers
+    LoopAsync(ms, function()
+        if stopped then return true end
+        ExecuteInGameThread(function() local ok, stop = pcall(fn); if ok and stop then stopped = true end end)
+        return false
+    end)
+end
+local function After(ms, fn)      -- fn runs on the game thread once, after ms
+    if ExecuteInGameThreadWithDelay then
+        ExecuteInGameThreadWithDelay(ms, function() local ok, err = pcall(fn); if not ok then Out("timer error: %s", tostring(err)) end end)
+    else
+        ExecuteWithDelay(ms, function() ExecuteInGameThread(function() pcall(fn) end) end)
+    end
+end
+-- key binds only set one of these; the game-thread poll in the wiring section acts on them
+local PRESSED = { click = false, toggle = false, reapply = false, report = false, heal = false }
+
+--------------------------------------------------------------------------------------------------
 -- Config (shared ini)
 --------------------------------------------------------------------------------------------------
 local INI_NAME = "BiggerParty.ini"
@@ -250,7 +284,7 @@ end
 
 local function ApplyCreationScreenTweaks(label)
     for _, ms in ipairs({ 2500, 6000 }) do
-        ExecuteWithDelay(ms, function()
+        After(ms, function()
             if not Active() then return end
             pcall(FixLayout); pcall(WidenCamera)
         end)
@@ -301,16 +335,11 @@ end
 
 local function WatchSessionScreen(screen)
     -- tiles are (re)built when players join/leave; re-check every 2 s while the screen lives
-    local stop = false
-    LoopAsync(2000, function()
-        if stop then return true end
-        ExecuteInGameThread(function()             -- UObjects must only be touched on the game thread
-            if not screen:IsValid() then stop = true return end
-            pcall(FixPlayerTiles, screen)
-        end)
-        return false
+    Every(2000, function()
+        if not screen:IsValid() then return true end
+        pcall(FixPlayerTiles, screen)
     end)
-    ExecuteWithDelay(300, function() if screen:IsValid() then pcall(FixPlayerTiles, screen) end end)
+    After(300, function() if screen:IsValid() then pcall(FixPlayerTiles, screen) end end)
 end
 
 --------------------------------------------------------------------------------------------------
@@ -480,16 +509,40 @@ local function IsInsideWidget(w, screen)
     return false
 end
 
+-- one scan of the user widgets per pass: the screens and the click emulation share it
+local UW_CACHE, UW_GEN, UW_CACHE_GEN = nil, 0, -1
+local function NewScan() UW_GEN = UW_GEN + 1 end
+local function UserWidgets()
+    if UW_CACHE_GEN ~= UW_GEN then UW_CACHE = Instances("UserWidget"); UW_CACHE_GEN = UW_GEN end
+    return UW_CACHE
+end
+
 local function InspectionPortraitsIn(screen)
     local out = {}
-    for _, w in ipairs(Instances("UserWidget")) do
-        if ShortName(w:GetFullName()):match("^WBP_InspectionPortrait") and IsInsideWidget(w, screen) then out[#out + 1] = w end
+    for _, w in ipairs(UserWidgets()) do
+        local n = w:IsValid() and ShortName(w:GetFullName()) or ""
+        if (n:match("^WBP_InspectionPortrait") or n:match("^WBP_PortraitSmallCircle_WithEncumbrance")) and IsInsideWidget(w, screen) then out[#out + 1] = w end
     end
     table.sort(out, function(a, b) return a:GetFullName() < b:GetFullName() end)
     return out
 end
 
 local PORTRAIT_BOUND = {}
+PORTRAIT_HERO = {}            -- extra portrait widget address -> 0-based hero index
+local PORTRAIT_REC = {}       -- extra portrait widget address -> { w = widget, name = full name } (liveness check)
+
+-- the first original portrait next to ours (same class, not one we created)
+local function OriginalFor(widget)
+    local parent = Try(function() return widget:GetParent() end)
+    if not (parent and parent:IsValid()) then return nil end
+    local cls = ClassName(widget)
+    local n = Try(function() return parent:GetChildrenCount() end) or 0
+    for k = 0, n - 1 do
+        local c = Try(function() return parent:GetChildAt(k) end)
+        if c and c:IsValid() and ClassName(c) == cls and not PORTRAIT_HERO[c:GetAddress()] then return c end
+    end
+    return nil
+end
 local function BindExtraPortrait(widget, heroIndex)      -- heroIndex is 0-based into PartyComponent.Party
     -- portraits are captured asynchronously and the manager can hand back a shared/placeholder texture at
     -- first, so keep re-applying until the same texture has been seen a few times in a row.
@@ -524,11 +577,9 @@ local function BindExtraPortrait(widget, heroIndex)      -- heroIndex is 0-based
     -- What does an original portrait's image hold? Mirror that: same brush, same image size, and if it
     -- is a dynamic material, a fresh instance of the same parent material with our texture as parameter.
     local origImg = nil
-    for _, w in ipairs(Instances("UserWidget")) do
-        if ShortName(w:GetFullName()) == "WBP_InspectionPortrait" then
-            ForEachWidget(w, function(c) if not origImg and ShortName(c:GetFullName()) == "PortraitImg" then origImg = c end end)
-            if origImg then break end
-        end
+    local firstSibling = OriginalFor(widget)
+    if firstSibling and firstSibling:IsValid() then
+        ForEachWidget(firstSibling, function(c) if not origImg and ShortName(c:GetFullName()) == "PortraitImg" then origImg = c end end)
     end
     local origRes = origImg and Try(function() return origImg.Brush.ResourceObject end)
     local origSize = origImg and Try(function() return origImg.Brush.ImageSize end)
@@ -582,13 +633,7 @@ local function BindExtraPortrait(widget, heroIndex)      -- heroIndex is 0-based
     if not ok then Out("inspect: setting the portrait brush failed: %s", tostring(err)) return false end
     if origSize and origSize.X > 0 then pcall(function() img:SetDesiredSizeOverride({ X = origSize.X, Y = origSize.Y }) end) end
     -- mirror the child visibility states of an original portrait (hides the "?" placeholder etc.)
-    local original = nil
-    for _, w in ipairs(Instances("UserWidget")) do
-        if ShortName(w:GetFullName()) == "WBP_InspectionPortrait" and IsInsideWidget(w, Try(function() return widget:GetParent() end) or widget) then original = w break end
-    end
-    if not original then
-        for _, w in ipairs(Instances("UserWidget")) do if ShortName(w:GetFullName()) == "WBP_InspectionPortrait" then original = w break end end
-    end
+    local original = OriginalFor(widget)
     if original then
         local states = {}
         ForEachWidget(original, function(w) states[ShortName(w:GetFullName())] = Try(function() return w:GetVisibility() end) end)
@@ -614,45 +659,274 @@ local function BindExtraPortrait(widget, heroIndex)      -- heroIndex is 0-based
     return true
 end
 
+local BIND_FLAG = false   -- the flag the game itself passes to InspectionScreen:Bind on a portrait click
+
+-- Screens that carry the four hand-placed WBP_InspectionPortrait widgets. The inspection screen binds a hero
+-- through InspectionScreen:Bind; the chest and merchant screens follow the party selection instead.
+local PORTRAIT_SCREENS = {
+    { class = "InspectionScreen", kind = "inspection" },
+    { class = "ModalChestScreen", kind = "selection" },
+    { class = "MerchantScreen",   kind = "selection" },
+}
+
+local function PortraitScreens()
+    local out = {}
+    for _, def in ipairs(PORTRAIT_SCREENS) do
+        for _, screen in ipairs(Instances(def.class)) do
+            if Try(function() return screen:IsVisible() end) then out[#out + 1] = { screen = screen, kind = def.kind } end
+        end
+    end
+    return out
+end
+
+local function PartyArray()
+    for _, pc in ipairs(Instances("PartyComponent")) do
+        local party = Try(function() return pc.Party end)
+        if Count(party) > 0 then return party end
+    end
+    return nil
+end
+
+-- party index (0-based) of a hero actor, or of the pawn (Character_<Hero>_<id>) that stands for it
+local function PartyIndexOf(actor)
+    local party = PartyArray()
+    if not (party and actor and actor:IsValid()) then return nil end
+    local name = ShortName(actor:GetFullName())
+    for i = 1, Count(party) do
+        local m = party[i]
+        if m and m:IsValid() then
+            if m:GetAddress() == actor:GetAddress() then return i - 1 end
+            local heroName = ShortName(m:GetFullName()):gsub("_%d+$", "")
+            if name:gsub("_%d+$", "") == "Character_" .. heroName then return i - 1 end
+        end
+    end
+    return nil
+end
+
+local function PawnForHero(hero)
+    local prefix = "Character_" .. ShortName(hero:GetFullName()):gsub("_%d+$", "")
+    for _, cls in ipairs({ "BrimstoneCharacter", "Character" }) do
+        for _, pawn in ipairs(Instances(cls)) do
+            if ShortName(pawn:GetFullName()):gsub("_%d+$", "") == prefix then return pawn end
+        end
+    end
+    return nil
+end
+
+local function LocalSelectionState()
+    for _, c in ipairs(Instances("BrimstoneSelectionStateComponent")) do return c end
+    return nil
+end
+
+-- 0-based party index of the hero the screen currently shows
+local function CurrentHeroIndex(entry)
+    if entry.kind == "inspection" then
+        local comp = Try(function() return entry.screen:GetGuiRulesetActor() end)
+        local owner = comp and comp:IsValid() and Try(function() return comp:GetOwner() end)
+        return PartyIndexOf(owner)
+    end
+    local sel = LocalSelectionState()
+    local pc = UEHelpers.GetPlayerController()
+    if not (sel and sel:IsValid() and pc and pc:IsValid()) then return nil end
+    local pawn = Try(function() return sel:GetSelectedCharacter(pc) end) or Try(function() return sel:GetSelectedCharacter() end)
+    if not (pawn and pawn.IsValid and pawn:IsValid()) then pawn = Try(function() return pc:K2_GetPawn() end) end
+    return PartyIndexOf(pawn)
+end
+
+-- make the screen show this hero (what a click on one of the original portraits does)
+local function SelectHeroOn(entry, hero)
+    if entry.kind == "inspection" then
+        local guiClass = StaticFindObject("/Script/Brimstone.GuiRulesetActorComponent")
+        local comp = Try(function() return hero:GetComponentByClass(guiClass) end)
+        if not (comp and comp:IsValid()) then return false, "no GuiRulesetActorComponent" end
+        return pcall(function() entry.screen:Bind(comp, BIND_FLAG) end)
+    end
+    local pawn = PawnForHero(hero)
+    local sel = LocalSelectionState()
+    local pc = UEHelpers.GetPlayerController()
+    if not (pawn and sel and sel:IsValid() and pc and pc:IsValid()) then return false, "no pawn / selection state" end
+    return pcall(function() sel:SelectCharacter(pawn, pc, true, true) end)
+end
+
+-- Blueprint reflection: find a function up the class chain, list its parameters, and call it with the
+-- hero / portrait widget matched to the parameter types (the chest screen's own handlers take one of them).
+local function FunctionOf(obj, name)
+    local found = nil
+    local cls = Try(function() return obj:GetClass() end)
+    local depth = 0
+    while cls and cls:IsValid() and not found and depth < 12 do
+        pcall(function() cls:ForEachFunction(function(fn) if not found and ShortName(fn:GetFullName()) == name then found = fn end end) end)
+        cls = Try(function() return cls:GetSuperStruct() end)
+        depth = depth + 1
+    end
+    return found
+end
+local function ParamsOf(fn)
+    local out = {}
+    local retFlag = EPropertyFlags and EPropertyFlags.CPF_ReturnParm
+    local outFlag = EPropertyFlags and EPropertyFlags.CPF_OutParm
+    pcall(function()
+        fn:ForEachProperty(function(prop)
+            local q = {}
+            q.name = Try(function() return prop:GetFName():ToString() end) or "?"
+            q.type = Try(function() return prop:GetClass():GetFName():ToString() end) or "?"
+            q.class = Try(function() return ShortName(prop:GetPropertyClass():GetFullName()) end)
+            q.ret = (retFlag and Try(function() return prop:HasAnyPropertyFlags(retFlag) end)) or q.name == "ReturnValue"
+            q.out = (outFlag and Try(function() return prop:HasAnyPropertyFlags(outFlag) end)) or false
+            out[#out + 1] = q
+        end)
+    end)
+    return out
+end
+local function DescribeParams(fn)
+    local parts = {}
+    for _, q in ipairs(ParamsOf(fn)) do
+        parts[#parts + 1] = (q.ret and "-> " or "") .. q.name .. ":" .. q.type .. (q.class and ("<" .. q.class .. ">") or "")
+    end
+    return table.concat(parts, ", ")
+end
+local function CallByParams(obj, fnName, hero, widget, index)
+    local fn = FunctionOf(obj, fnName)
+    if not fn then return false, "no function " .. fnName, "" end
+    local args, desc = {}, {}
+    for _, q in ipairs(ParamsOf(fn)) do
+        if not q.ret then
+            local cls, nm = (q.class or ""):lower(), q.name:lower()
+            local v
+            if q.out then
+                return false, "output parameter " .. q.name .. " not handled", DescribeParams(fn)
+            elseif q.type == "ObjectProperty" then
+                if cls:find("widget") or cls:find("portrait") or nm:find("widget") or nm:find("portrait") then v = widget else v = hero end
+            elseif q.type == "BoolProperty" then v = true
+            elseif q.type == "IntProperty" or q.type == "ByteProperty" then v = index or 0
+            else
+                return false, "parameter " .. q.name .. ":" .. q.type .. " not handled", DescribeParams(fn)
+            end
+            args[#args + 1] = v
+            desc[#desc + 1] = q.name .. "=" .. ((v == hero) and "hero" or (v == widget) and "portrait" or tostring(v))
+        end
+    end
+    local ok, err = pcall(function() return obj[fnName](obj, table.unpack(args)) end)
+    return ok, err, table.concat(desc, ", ")
+end
+
+-- The chest/merchant screens bind their four portraits through the portrait's own BindToGameplay(RulesetActor)
+-- (the view model behind the carried-weight gauge hangs off that). Bind ours the same way; a click then goes
+-- through the screen's OnPortraitClicked(BoundRulesetActor), which makes that hero the looter.
+local GAMEPLAY_BOUND = {}     -- extra widget address -> hero address bound through BindToGameplay
+local function BindGameplay(entry, w, orig)
+    local key = w:GetAddress()
+    local k = PORTRAIT_HERO[key]
+    local party = PartyArray()
+    local hero = party and k and party[k + 1]
+    if not (hero and hero:IsValid()) then return end
+    local current = Try(function() return w:GetBoundActor() end)
+    if current and current.IsValid and current:IsValid() and current:GetAddress() == hero:GetAddress() then GAMEPLAY_BOUND[key] = hero:GetAddress() return end
+    if GAMEPLAY_BOUND[key] == hero:GetAddress() then return end
+    local ok, err, sig = CallByParams(w, "BindToGameplay", hero, w, k)
+    Out("inspect: portrait %d BindToGameplay(%s) -> %s", k + 1, sig, ok and "ok" or tostring(err))
+    GAMEPLAY_BOUND[key] = hero:GetAddress()   -- success or not, do not retry every second
+end
+
+-- originals first (by name), then the extras we created (by hero index)
+local function OrderedPortraits(screen)
+    local originals, extras = {}, {}
+    for _, w in ipairs(InspectionPortraitsIn(screen)) do
+        if PORTRAIT_HERO[w:GetAddress()] then extras[#extras + 1] = w else originals[#originals + 1] = w end
+    end
+    table.sort(extras, function(a, b) return PORTRAIT_HERO[a:GetAddress()] < PORTRAIT_HERO[b:GetAddress()] end)
+    return originals, extras
+end
+
+local function CopyPadding(from, to)
+    local pad = from and Try(function() return from.Slot.Padding end)
+    if pad and to then pcall(function() to.Slot:SetPadding({ Left = pad.Left, Top = pad.Top, Right = pad.Right, Bottom = pad.Bottom }) end) end
+end
+
 local function ExtendInspectionPortraits(verbose)
     if not Active() then return end
-    local nHeroes = 0
-    for _, pc in ipairs(Instances("PartyComponent")) do nHeroes = math.max(nHeroes, Count(Try(function() return pc.Party end))) end
+    local nHeroes = Count(PartyArray())
     if nHeroes <= 4 then return end
-    for _, screen in ipairs(Instances("InspectionScreen")) do
-        if Try(function() return screen:IsVisible() end) then
-            local portraits = InspectionPortraitsIn(screen)
-            if #portraits > 0 then
-                local last = portraits[#portraits]
-                local parent = Try(function() return last:GetParent() end)
-                if parent and parent:IsValid() then
-                    local n = Try(function() return parent:GetChildrenCount() end) or 0
-                    for k = 4, n - 1 do
-                        local w = Try(function() return parent:GetChildAt(k) end)
-                        if w and w:IsValid() then pcall(BindExtraPortrait, w, k) end
+    for _, entry in ipairs(PortraitScreens()) do
+        local originals, extras = OrderedPortraits(entry.screen)
+        if #originals > 0 then
+            local last = originals[#originals]
+            local parent = Try(function() return last:GetParent() end)
+            if parent and parent:IsValid() then
+                for _, w in ipairs(extras) do pcall(BindExtraPortrait, w, PORTRAIT_HERO[w:GetAddress()]) end
+                if entry.kind == "selection" then
+                    for _, w in ipairs(extras) do
+                        local okG, errG = pcall(BindGameplay, entry, w, originals[1])
+                        if not okG then Out("inspect: BindGameplay error: %s", tostring(errG)) end
                     end
                 end
-                if parent and parent:IsValid() and not PORTRAITS_DONE[parent:GetAddress()] then
-                    local existing = Try(function() return parent:GetChildrenCount() end) or #portraits
-                    if existing < nHeroes then
-                        local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
-                        local pc = UEHelpers.GetPlayerController()
-                        local cls = last:GetClass()
-                        local added = 0
-                        for k = existing, nHeroes - 1 do
-                            local ok, err = pcall(function()
-                                local w = lib:Create(last, cls, pc)
-                                if not (w and w:IsValid()) then error("Create returned nothing") end
-                                parent:AddChild(w)
-                                local srcSlot, dstSlot = Try(function() return last.Slot end), Try(function() return w.Slot end)
-                                local pad = srcSlot and Try(function() return srcSlot.Padding end)
-                                if pad and dstSlot then pcall(function() dstSlot:SetPadding({ Left = pad.Left, Top = pad.Top, Right = pad.Right, Bottom = pad.Bottom }) end) end
-                                added = added + 1
-                            end)
-                            if not ok then Out("inspect: could not add portrait %d: %s", k + 1, tostring(err)) break end
+                local existing = #originals + #extras
+                if existing < nHeroes and os.clock() - (PORTRAITS_DONE[parent:GetAddress()] or -100) > 5 then
+                    -- whatever sits after the last portrait in the row (weight icon, hints) goes back to the end afterwards
+                    local trailing = {}
+                    local n = Try(function() return parent:GetChildrenCount() end) or 0
+                    local lastIdx = Try(function() return parent:GetChildIndex(last) end) or (n - 1)
+                    for k = lastIdx + 1, n - 1 do
+                        local c = Try(function() return parent:GetChildAt(k) end)
+                        if c and c:IsValid() then trailing[#trailing + 1] = c end
+                    end
+                    local lib = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+                    local pc = UEHelpers.GetPlayerController()
+                    local cls = last:GetClass()
+                    local added = 0
+                    for k = existing, nHeroes - 1 do
+                        local ok, err = pcall(function()
+                            local w = lib:Create(last, cls, pc)
+                            if not (w and w:IsValid()) then error("Create returned nothing") end
+                            parent:AddChild(w)
+                            CopyPadding(last, w)
+                            PORTRAIT_HERO[w:GetAddress()] = k
+                            PORTRAIT_REC[w:GetAddress()] = { w = w, name = w:GetFullName() }
+                            added = added + 1
+                        end)
+                        if not ok then Out("inspect: could not add portrait %d: %s", k + 1, tostring(err)) break end
+                    end
+                    for _, c in ipairs(trailing) do
+                        local pad = Try(function() return c.Slot.Padding end)
+                        if pcall(function() parent:RemoveChild(c) end) and pcall(function() parent:AddChild(c) end) and pad then
+                            pcall(function() c.Slot:SetPadding({ Left = pad.Left, Top = pad.Top, Right = pad.Right, Bottom = pad.Bottom }) end)
                         end
-                        PORTRAITS_DONE[parent:GetAddress()] = true
-                        Out("inspect: portraits %d -> %d in %s (%s) — unbound until the Blueprint's bind call is known", existing, existing + added, ShortName(parent:GetFullName()), ClassName(parent))
+                    end
+                    PORTRAITS_DONE[parent:GetAddress()] = os.clock()
+                    Out("inspect: portraits %d -> %d on %s", existing, existing + added, ShortName(entry.screen:GetFullName()))
+                end
+            end
+        end
+    end
+end
+
+-- Selection ring for the extra portraits: the game calls the small circle's SetSelected on its own four.
+local EXTRA_SELECTED = {}
+
+-- forget extras whose widget is gone (its screen was destroyed): the address is reused by new objects
+local function PruneExtras()
+    for addr, rec in pairs(PORTRAIT_REC) do
+        local alive = Try(function() return rec.w:IsValid() and rec.w:GetFullName() == rec.name end)
+        if not alive then
+            PORTRAIT_REC[addr] = nil; PORTRAIT_HERO[addr] = nil; EXTRA_SELECTED[addr] = nil; GAMEPLAY_BOUND[addr] = nil
+            PORTRAIT_BOUND[addr] = nil; PORTRAIT_BOUND["stable" .. addr] = nil; PORTRAIT_BOUND["tex" .. addr] = nil; PORTRAIT_BOUND["warned" .. addr] = nil
+        end
+    end
+end
+local function UpdateExtraHighlights()
+    if not Active() then return end
+    for _, entry in ipairs(PortraitScreens()) do
+        local idx = CurrentHeroIndex(entry)
+        if idx ~= nil then
+            local _, extras = OrderedPortraits(entry.screen)
+            for _, w in ipairs(extras) do
+                local want = (PORTRAIT_HERO[w:GetAddress()] == idx)
+                if EXTRA_SELECTED[w:GetAddress()] ~= want then
+                    local circle = nil
+                    ForEachWidget(w, function(c) if not circle and ClassName(c) == "WBP_PortraitSmallCircle_C" then circle = c end end)
+                    if circle then
+                        local ok, err = pcall(function() circle:SetSelected(want) end)
+                        if ok then EXTRA_SELECTED[w:GetAddress()] = want else Out("inspect: SetSelected failed: %s", tostring(err)) end
                     end
                 end
             end
@@ -660,84 +934,31 @@ local function ExtendInspectionPortraits(verbose)
     end
 end
 
--- Selection ring for the extra portraits: the game calls WBP_PortraitSmallCircle:SetSelected on its four;
--- do the same for ours from the inspection view model's CurrentInspectionIndex.
-local EXTRA_SELECTED = {}
-SETSELECTED_ARG = function(want) return want end   -- WBP_PortraitSmallCircle_C:SetSelected(bIsSelected: bool)
-local function UpdateExtraHighlights()
-    if not Active() then return end
-    for _, screen in ipairs(Instances("InspectionScreen")) do
-        if Try(function() return screen:IsVisible() end) then
-            -- which hero is inspected: the screen's bound GUI component -> its owner -> index in the party
-            local comp = Try(function() return screen:GetGuiRulesetActor() end)
-            local owner = comp and comp:IsValid() and Try(function() return comp:GetOwner() end)
-            local idx = nil
-            if owner and owner:IsValid() then
-                for _, pc in ipairs(Instances("PartyComponent")) do
-                    local party = Try(function() return pc.Party end)
-                    for i = 1, Count(party) do
-                        local m = party[i]
-                        if m and m:IsValid() and m:GetAddress() == owner:GetAddress() then idx = i - 1 break end
-                    end
-                    if idx then break end
-                end
-            end
-            if idx == nil then return end
-            local portraits = InspectionPortraitsIn(screen)
-            if #portraits > 4 then
-                local parent = Try(function() return portraits[#portraits]:GetParent() end)
-                local n = parent and parent:IsValid() and (Try(function() return parent:GetChildrenCount() end) or 0) or 0
-                for k = 4, n - 1 do
-                    local w = Try(function() return parent:GetChildAt(k) end)
-                    if w and w:IsValid() then
-                        local want = (k == idx)
-                        if EXTRA_SELECTED[w:GetAddress()] ~= want then
-                            local circle = nil
-                            ForEachWidget(w, function(c) if not circle and ShortName(c:GetFullName()) == "WBP_PortraitSmallCircle" then circle = c end end)
-                            if circle and SETSELECTED_ARG then
-                                local ok, err = pcall(function() circle:SetSelected(SETSELECTED_ARG(want, w)) end)
-                                if ok then EXTRA_SELECTED[w:GetAddress()] = want
-                                else Out("inspect: SetSelected failed: %s", tostring(err)) end
-                            elseif not circle then Out("inspect: no circle widget inside portrait %d", k + 1) end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
--- Click discovery (light): does the screen override a mouse event, and does a click reach InspectionScreen:Bind?
-local BIND_FLAG = false   -- the flag the game itself passes to InspectionScreen:Bind on a portrait click
--- Emulated click on the extra portraits: the game's own portraits end in InspectionScreen:Bind(component, flag);
--- on a left click, if an extra portrait is hovered, make the same call for its hero.
+-- Emulated click on the extra portraits: on a left click, the hovered extra selects its hero the way the
+-- screen's own portraits do.
 local function ClickExtraPortraits()
     if not Active() then return end
-    for _, screen in ipairs(Instances("InspectionScreen")) do
-        if Try(function() return screen:IsVisible() end) then
-            local portraits = InspectionPortraitsIn(screen)
-            if #portraits <= 4 then return end
-            -- which hero is currently inspected (its enlarged portrait may still sit under the cursor)
-            local curIdx = nil
-            local comp0 = Try(function() return screen:GetGuiRulesetActor() end)
-            local owner0 = comp0 and comp0:IsValid() and Try(function() return comp0:GetOwner() end)
-            local party = nil
-            for _, pc in ipairs(Instances("PartyComponent")) do party = Try(function() return pc.Party end) if party then break end end
-            if owner0 and owner0:IsValid() and party then
-                for i = 1, Count(party) do local m = party[i]; if m and m:IsValid() and m:GetAddress() == owner0:GetAddress() then curIdx = i - 1 break end end
-            end
-            local parent = Try(function() return portraits[#portraits]:GetParent() end)
-            local n = parent and parent:IsValid() and (Try(function() return parent:GetChildrenCount() end) or 0) or 0
-            for k = 4, n - 1 do
-                local w = Try(function() return parent:GetChildAt(k) end)
-                if w and w:IsValid() and k ~= curIdx and Try(function() return w:IsHovered() end) then
+    for _, entry in ipairs(PortraitScreens()) do
+        local _, extras = OrderedPortraits(entry.screen)
+        if #extras > 0 then
+            local curIdx = CurrentHeroIndex(entry)
+            local party = PartyArray()
+            for _, w in ipairs(extras) do
+                local k = PORTRAIT_HERO[w:GetAddress()]
+                if k ~= curIdx and Try(function() return w:IsHovered() end) then
                     local hero = party and party[k + 1]
                     if hero and hero:IsValid() then
-                        local guiClass = StaticFindObject("/Script/Brimstone.GuiRulesetActorComponent")
-                        local comp = Try(function() return hero:GetComponentByClass(guiClass) end)
-                        if comp and comp:IsValid() then
-                            local ok, err = pcall(function() screen:Bind(comp, BIND_FLAG) end)
-                            if not ok then Out("click: portrait %d Bind failed: %s", k + 1, tostring(err)) end
-                            if ok then pcall(UpdateExtraHighlights) end
+                        local ok, err = SelectHeroOn(entry, hero)
+                        if not ok then Out("click: portrait %d select failed: %s", k + 1, tostring(err)) end
+                        if ok then pcall(UpdateExtraHighlights) end
+                        if entry.kind == "selection" then
+                            -- what the screen does when one of its own portraits is clicked (looter, refresh)
+                            local okC, errC, sig = CallByParams(entry.screen, "OnPortraitClicked", hero, w, k)
+                            if not okC and tostring(errC):match("^no function") then okC, errC, sig = CallByParams(entry.screen, "SetLooter", hero, w, k) end
+                            if not okC or not CLICK_LOGGED then
+                                CLICK_LOGGED = true
+                                Out("click: portrait %d handler(%s) -> %s", k + 1, tostring(sig), okC and "ok" or tostring(errC))
+                            end
                         end
                     end
                     return
@@ -748,9 +969,7 @@ local function ClickExtraPortraits()
 end
 
 local okM, errM = pcall(function()
-    RegisterKeyBind(Key.LEFT_MOUSE_BUTTON, function()
-        ExecuteInGameThread(function() pcall(ClickExtraPortraits) end)
-    end)
+    RegisterKeyBind(Key.LEFT_MOUSE_BUTTON, function() PRESSED.click = true end)
 end)
 if not okM then Out("click: could not bind the left mouse button: %s", tostring(errM)) end
 
@@ -763,13 +982,29 @@ local ROW_DONE = {}
 
 -- Containers to fit, as { class = "<UE4SS class name>", fields = { "<container property>", ... } }.
 local HERO_ROWS = {
-    { class = "PostRestActionsPanel",     fields = { "CharacterActionRowsTable" } },
-    { class = "PostRestLostPanel",        fields = { "CharacterLostRowsTable" } },
-    { class = "PostRestRecoveredPanel",   fields = { "CharacterRecoveredRowsTable" } },
-    { class = "RestPredictionPanel",      fields = { "CharacterConsumedFoodTable", "CharacterLostEffectsTable", "CharacterRestoredFeaturesTable" } },
-    { class = "BattleInitiativePanel",    fields = { "CharacterPlatesTable" } },
+    -- scale = true: shrink the whole row visually (pivot top-left) - the card width on these screens is not
+    -- set by a size box, so shrinking boxes inside the cards changes nothing
+    { class = "PostRestActionsPanel",     fields = { "CharacterActionRowsTable" }, scale = true },
+    { class = "PostRestLostPanel",        fields = { "CharacterLostRowsTable" }, scale = true },
+    { class = "PostRestRecoveredPanel",   fields = { "CharacterRecoveredRowsTable" }, scale = true },
+    { class = "RestPredictionPanel",      fields = { "CharacterConsumedFoodTable", "CharacterLostEffectsTable", "CharacterRestoredFeaturesTable" }, scale = true },
     { class = "CharacterAssignmentScreen", fields = { "HeroesContainer", "NPCsContainer", "UnassignedCharactersHB", "UnassignedPlayersHB" } },
 }
+
+-- Visual fit: scale the row so N cards take the width of 4. Re-applied whenever the game resets the transform.
+local function ScaleRow(container, label)
+    if not (container and container:IsValid()) then return end
+    local n = Try(function() return container:GetChildrenCount() end) or 0
+    if n <= 4 then return end
+    local f = 4 / n
+    local cur = Try(function() return container.RenderTransform.Scale.X end)
+    if cur and math.abs(cur - f) < 0.01 then return end
+    local ok = pcall(function()
+        container:SetRenderTransformPivot({ X = 0, Y = 0 })
+        container:SetRenderScale({ X = f, Y = f })
+    end)
+    Out("rows: %s scaled %d cards by %.2f: %s", label, n, f, ok and "ok" or "failed")
+end
 
 -- Shrink every fixed width inside a container's children so N of them occupy the space of 4.
 local function FitRow(container, label)
@@ -819,7 +1054,8 @@ local function FitHeroRows()
             if Try(function() return screen:IsVisible() end) then
                 for _, field in ipairs(entry.fields) do
                     local container = Try(function() return screen[field] end)
-                    pcall(FitRow, container, entry.class .. "." .. field)
+                    if entry.scale then pcall(ScaleRow, container, entry.class .. "." .. field)
+                    else pcall(FitRow, container, entry.class .. "." .. field) end
                 end
             end
         end
@@ -871,6 +1107,206 @@ end
 -- components, let the scene run with four, then hand them back.
 --------------------------------------------------------------------------------------------------
 
+-- Party formation: followers walk to anchors arranged around the leader. Dump where the anchors are and which
+-- heroes have a controller; Ctrl+Shift+F re-spawns the anchors (SpawnAnchors(true) reassigns them too).
+local function Dist(a, b)
+    if not (a and b) then return -1 end
+    local dx, dy, dz = a.X - b.X, a.Y - b.Y, a.Z - b.Z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function FormationManager()
+    for _, m in ipairs(Instances("PartyFormationManagerComponent")) do return m end
+    return nil
+end
+
+local function ReportFormation()
+    local pc = UEHelpers.GetPlayerController()
+    local leader = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
+    local lpos = leader and leader:IsValid() and Try(function() return leader:K2_GetActorLocation() end)
+    local mgr = FormationManager()
+    Out("formation: manager=%s leader=%s designAnchors=%s providedDesignAnchors=%s radius=%s spread=%s",
+        mgr and mgr:IsValid() and ShortName(mgr:GetFullName()) or "none",
+        (leader and leader:IsValid()) and ShortName(leader:GetFullName()) or "none",
+        tostring(mgr and Count(Try(function() return mgr.DesignAnchors end))), tostring(mgr and Count(Try(function() return mgr.ProvidedDesignAnchors end))),
+        tostring(mgr and Try(function() return mgr.PartyFormationRadius end)), tostring(mgr and Try(function() return mgr.PartyFormationAngleSpread end)))
+    local anchors = Instances("PartyFormationAnchor")
+    Out("formation: %d anchor(s)", #anchors)
+    for i, a in ipairs(anchors) do
+        local pos = Try(function() return a:K2_GetActorLocation() end)
+        local following = Try(function() return a.FollowingActor end)
+        Out("   anchor %d %s dist-to-leader=%.0f following=%s followsLeader=%s", i, ShortName(a:GetFullName()), Dist(pos, lpos),
+            (following and following.IsValid and following:IsValid()) and ShortName(following:GetFullName()) or "none",
+            tostring(Try(function() return a.AnchorFollowingPartyLeader end)))
+    end
+    local party = PartyArray()
+    for i = 1, Count(party) do
+        local hero = party[i]
+        if hero and hero:IsValid() then
+            local pawn = PawnForHero(hero)
+            local ctrl = pawn and Try(function() return pawn:GetController() end)
+            local pos = pawn and Try(function() return pawn:K2_GetActorLocation() end)
+            local anchorTo = ctrl and Try(function() return ctrl:GetAnchorToFollow() end)
+            local leaderTo = ctrl and Try(function() return ctrl:GetLeaderToFollow() end)
+            Out("   hero %d %s pawn=%s controller=%s dist-to-leader=%.0f anchor=%s leader=%s", i, ShortName(hero:GetFullName()):gsub("_%d+$", ""),
+                pawn and "ok" or "none", (ctrl and ctrl:IsValid()) and ClassName(ctrl) or "NONE", Dist(pos, lpos),
+                (anchorTo and anchorTo.IsValid and anchorTo:IsValid()) and ShortName(anchorTo:GetFullName()) or "none",
+                (leaderTo and leaderTo.IsValid and leaderTo:IsValid()) and ShortName(leaderTo:GetFullName()) or "none")
+        end
+    end
+end
+
+local REPAIR_LOGGED = {}
+local LAST_HEAL = 0
+-- A raw possession leaves every follower AI with a stale party leader (it then follows anchors arranged around
+-- the wrong hero and wanders). Only the game's own selection path refreshes it, so heal by selecting another
+-- hero and re-selecting the current one - what pressing Tab twice does. Never during a dialogue.
+local function RepairFormation(verbose)
+    if not Active() then return 0 end
+    local dialogueUp = false
+    for _, scr in ipairs(Instances("DialogueScreen")) do if Try(function() return scr:IsVisible() end) then dialogueUp = true break end end
+    if dialogueUp then return 0 end
+    -- never switch selection during combat (turn order and focus belong to the battle UI there)
+    for _, cls in ipairs({ "BattleInitiativePanel", "TurnControlPanel" }) do
+        for _, w in ipairs(Instances(cls)) do if Try(function() return w:IsVisible() end) then return 0 end end
+    end
+    if PRE_DIALOGUE_PAWN then
+        -- marker left behind by a scene whose end event never came: hand back after a grace period
+        if os.clock() - (PRE_DIALOGUE_SINCE or 0) < 20 then return 0 end
+        Out("dialogue: no dialogue screen for 20 s but the pre-dialogue marker is still set; handing back now")
+        if ResyncSelectionRef then pcall(ResyncSelectionRef) end
+        return 0
+    end
+    local pc = UEHelpers.GetPlayerController()
+    local leader = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
+    if not (leader and leader:IsValid() and ShortName(leader:GetFullName()):match("^Character_")) then return 0 end
+    local party = PartyArray()
+    if Count(party) <= 4 then return 0 end
+    local stale, other = nil, nil
+    for i = 1, Count(party) do
+        local pawn = party[i] and party[i]:IsValid() and PawnForHero(party[i])
+        if pawn and pawn:GetAddress() ~= leader:GetAddress() then
+            other = other or pawn
+            local ctrl = Try(function() return pawn:GetController() end)
+            local l = ctrl and ctrl:IsValid() and Try(function() return ctrl:GetLeaderToFollow() end)
+            if l and l.IsValid and l:IsValid() and l:GetAddress() ~= leader:GetAddress() then stale = l end
+        end
+    end
+    if not (stale and other) then return 0 end
+    local now = os.clock()
+    if now - LAST_HEAL < 10 then return 0 end
+    LAST_HEAL = now
+    local sel = LocalSelectionState()   -- defined with the portrait helpers, above this function
+    if not (sel and sel:IsValid()) then return 0 end
+    local ok1 = pcall(function() sel:SelectCharacter(other, pc, true, true) end)
+    local ok2 = pcall(function() sel:SelectCharacter(leader, pc, true, true) end)
+    Out("formation: followers thought %s led; re-selected %s to refresh the leader (%s/%s)", ShortName(stale:GetFullName()),
+        ShortName(leader:GetFullName()), ok1 and "ok" or "refused", ok2 and "ok" or "refused")
+    return 1
+end
+
+Every(2000, function() pcall(RepairFormation, false) end)
+
+local function HealNow()
+    LAST_HEAL = 0
+    local n = RepairFormation(true)
+    Out("formation: heal pass %s", n > 0 and "refreshed the leader" or "found nothing to fix")
+    pcall(ReportFormation)
+end
+RegisterKeyBind(Key.F, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.heal = true end)
+
+-- What binds a chest-screen portrait to its hero? Dump an original and one of ours: class chain with
+-- property values and functions, extensions (view models), and the widget tree with texts.
+local function DescribeValue(v)
+    if v == nil then return "nil" end
+    if type(v) ~= "userdata" then return tostring(v) end
+    local ok, out = pcall(function()
+        local n = Count(v)
+        if n >= 0 then return "array[" .. n .. "]" end
+        local s = Try(function() return v:ToString() end)
+        if type(s) == "string" then return string.format("%q", s) end
+        if Try(function() return v.IsValid ~= nil and v:IsValid() end) then return ShortName(v:GetFullName()) .. " (" .. ClassName(v) .. ")" end
+        local x = Try(function() return v.X end)
+        if type(x) == "number" then return string.format("{X=%s Y=%s}", tostring(x), tostring(Try(function() return v.Y end))) end
+        return "userdata"
+    end)
+    return ok and out or ("? " .. tostring(out))
+end
+local function DumpObject(label, obj, stopAt)
+    Out("bind: %s = %s", label, obj and ShortName(obj:GetFullName()) or "nil")
+    if not obj then return end
+    local cls = Try(function() return obj:GetClass() end)
+    local depth = 0
+    while cls and cls:IsValid() and depth < 8 do
+        local cname = ShortName(cls:GetFullName())
+        if cname == stopAt then break end
+        local props, funcs = {}, {}
+        local okP, errP = pcall(function()
+            cls:ForEachProperty(function(prop)
+                pcall(function()
+                    local name = Try(function() return prop:GetFName():ToString() end) or "?"
+                    local ptype = Try(function() return prop:GetClass():GetFName():ToString() end) or "?"
+                    props[#props + 1] = string.format("%s:%s=%s", name, ptype, DescribeValue(Try(function() return obj[name] end)))
+                end)
+            end)
+        end)
+        if not okP then props[#props + 1] = "ForEachProperty failed: " .. tostring(errP) end
+        local blueprint = cname:match("_C$") ~= nil
+        local okF, errF = pcall(function()
+            cls:ForEachFunction(function(fn)
+                local fname = ShortName(fn:GetFullName())
+                if blueprint and not fname:match("^ExecuteUbergraph") and not fname:match("^SequenceEvent") then
+                    funcs[#funcs + 1] = fname .. "(" .. DescribeParams(fn) .. ")"
+                else
+                    funcs[#funcs + 1] = fname
+                end
+            end)
+        end)
+        if not okF then funcs[#funcs + 1] = "ForEachFunction failed: " .. tostring(errF) end
+        Out("bind:   class %s: %d properties, %d functions", cname, #props, #funcs)
+        for i = 1, #props do Out("bind:     %s", props[i]) end
+        if #funcs > 0 then
+            if blueprint then for i = 1, #funcs do Out("bind:     fn %s", funcs[i]) end
+            else Out("bind:     functions: %s", table.concat(funcs, ", ")) end
+        end
+        cls = Try(function() return cls:GetSuperStruct() end)
+        depth = depth + 1
+    end
+end
+local function DumpTree(label, root)
+    ForEachWidget(root, function(c)
+        local cname = ClassName(c)
+        local extra = ""
+        if cname:match("TextBlock") or cname:match("RichText") then extra = " text=" .. DescribeValue(Try(function() return c:GetText() end))
+        elseif cname == "Image" then extra = " brush=" .. DescribeValue(Try(function() return c.Brush.ResourceObject end))
+        elseif cname == "ProgressBar" then extra = " percent=" .. tostring(Try(function() return c.Percent end)) end
+        Out("bind:   %s %s (%s)%s vis=%s", label, ShortName(c:GetFullName()), cname, extra, tostring(Try(function() return c:GetVisibility() end)))
+    end)
+end
+local function ReportPortraitBindings()
+    for _, entry in ipairs(PortraitScreens()) do
+        if entry.kind == "selection" then
+            local originals, extras = OrderedPortraits(entry.screen)
+            local orig, ours = originals[1], extras[1]
+            if orig then
+                DumpObject("original portrait", orig, "UserWidget")
+                DumpTree("original", orig)
+                local ext = Try(function() return orig.Extensions end)
+                for i = 1, Count(ext) do DumpObject("original extension " .. i, ext[i], "Object") end
+            end
+            if ours then
+                DumpObject("extra portrait", ours, "UserWidget")
+                DumpTree("extra", ours)
+                local ext = Try(function() return ours.Extensions end)
+                for i = 1, Count(ext) do DumpObject("extra extension " .. i, ext[i], "Object") end
+            end
+            DumpObject("screen", entry.screen, "UserWidget")
+            return
+        end
+    end
+    Out("bind: no chest/merchant screen open (open a loot bag, then press Ctrl+Shift+Backspace)")
+end
+
 local function Report()
     ReadConfig()
     Out("config: Enabled=%s PartySize=%d FovMult=%.2f (%s)", tostring(CFG.Enabled), CFG.PartySize, FovMult(), iniPath or "ini not found")
@@ -903,6 +1339,8 @@ local function Report()
     pcall(ExtendInspectionPortraits, true)
     pcall(FitHeroRows)
     pcall(ReportFamilyRoles)
+    pcall(ReportFormation)
+    pcall(ReportPortraitBindings)
 end
 
 --------------------------------------------------------------------------------------------------
@@ -925,7 +1363,7 @@ local okB, errB = pcall(function()
     NotifyOnNewObject("/Script/Brimstone.MultiplayerOptionsScreen", function(obj)
         ReadConfig()
         if not Active() then return end
-        ExecuteWithDelay(500, function()
+        After(500, function()
             if obj:IsValid() then local ok, err = pcall(ExtendPlayersRadio, obj); if not ok then Out("host screen error: %s", tostring(err)) end end
         end)
     end)
@@ -1027,6 +1465,7 @@ RestorePartyOrder = function()
 end
 
 local EARLY_DONE = {}         -- dialogue tag -> true once a hero has been possessed for it
+PRE_DIALOGUE_PAWN = nil       -- the pawn the player had selected before the mod possessed a participant
 local function PossessEarly(self, tag)
     if not Active() then return end
     if not tag or tag == "None" or tag == "" or EARLY_DONE[tag] then return end
@@ -1034,7 +1473,7 @@ local function PossessEarly(self, tag)
     if not (owner and owner:IsValid()) then return end
     if not ShortName(owner:GetFullName()):match("^Character_") then return end
     EARLY_DONE[tag] = true
-    ExecuteWithDelay(5000, function() EARLY_DONE[tag] = nil end)
+    After(5000, function() EARLY_DONE[tag] = nil end)
     local pc = UEHelpers.GetPlayerController()
     if not (pc and pc:IsValid()) then return end
     local current = Try(function() return pc:K2_GetPawn() end)
@@ -1043,6 +1482,7 @@ local function PossessEarly(self, tag)
         pcall(SwapPartyFront, HeroForPawn(owner) or owner, tag)
         return
     end
+    if current and current:IsValid() and not PRE_DIALOGUE_PAWN then PRE_DIALOGUE_PAWN = current; PRE_DIALOGUE_SINCE = os.clock() end
     local ok, err = pcall(function() pc:Possess(owner) end)
     local after = Try(function() return pc:K2_GetPawn() end)
     Out("dialogue: %s - possessing first bound hero %s before the scene binds: %s (pawn now %s)", tag, ShortName(owner:GetFullName()),
@@ -1051,13 +1491,14 @@ local function PossessEarly(self, tag)
 end
 
 local function OnConversationExit()
-    if not PARTY_SWAP then return end
+    if not (PARTY_SWAP or PRE_DIALOGUE_PAWN) then return end
     EXIT_TOKEN = EXIT_TOKEN + 1
     local token = EXIT_TOKEN
-    ExecuteWithDelay(1500, function()
-        ExecuteInGameThread(function()
-            if token == EXIT_TOKEN then pcall(RestorePartyOrder) end
-        end)
+    After(1500, function()
+        if token == EXIT_TOKEN then
+            pcall(RestorePartyOrder)
+            if PRE_DIALOGUE_PAWN and ResyncSelectionRef then pcall(ResyncSelectionRef) end
+        end
     end)
 end
 for _, mod in ipairs({ "/Script/CommonConversationRuntime.", "/Script/Brimstone." }) do
@@ -1069,19 +1510,30 @@ for _, mod in ipairs({ "/Script/CommonConversationRuntime.", "/Script/Brimstone.
     if okX then break end
 end
 
+ResyncSelectionRef = nil
 local function ResyncSelection()
     local pc = UEHelpers.GetPlayerController()
-    local pawn = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
+    local possessed = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
     local sel = SelectionState()
-    if not (pawn and pawn:IsValid() and sel and sel:IsValid()) then return end
-    if not ShortName(pawn:GetFullName()):match("^Character_") then return end
-    local ok = pcall(function() sel:SelectCharacter(pawn, pc, true, true) end)
-    Out("dialogue: re-synced selection to %s after the dialogue: %s", ShortName(pawn:GetFullName()), ok and "ok" or "refused")
+    if not (sel and sel:IsValid() and pc and pc:IsValid()) then return end
+    local target = PRE_DIALOGUE_PAWN
+    PRE_DIALOGUE_PAWN = nil
+    if not (target and target.IsValid and target:IsValid() and ShortName(target:GetFullName()):match("^Character_")) then target = possessed end
+    if not (target and target:IsValid() and ShortName(target:GetFullName()):match("^Character_")) then return end
+    -- run the game's own selection twice: first the possessed participant (so its hand-back is done by the
+    -- game), then the hero the player had before the scene
+    if possessed and possessed:IsValid() and possessed:GetAddress() ~= target:GetAddress() then
+        pcall(function() sel:SelectCharacter(possessed, pc, true, true) end)
+    end
+    local ok = pcall(function() sel:SelectCharacter(target, pc, true, true) end)
+    Out("dialogue: selection handed back to %s after the dialogue: %s", ShortName(target:GetFullName()), ok and "ok" or "refused")
 end
+ResyncSelectionRef = ResyncSelection
+PRE_DIALOGUE_SINCE = 0
 for _, mod in ipairs({ "/Script/Brimstone.", "/Script/DialogueSystem.", "/Script/BrimstoneDialogue.", "/Script/TacticalCore." }) do
     local okE = pcall(function()
         RegisterHook(mod .. "DialogueManagerComponent:OnDialogueInstanceEnded", function(Context)
-            ExecuteWithDelay(500, function() ExecuteInGameThread(function() pcall(RestorePartyOrder); pcall(ResyncSelection) end) end)
+            After(500, function() pcall(RestorePartyOrder); pcall(ResyncSelection) end)
         end)
     end)
     if okE then break end
@@ -1099,42 +1551,46 @@ for _, mod in ipairs({ "/Script/Brimstone.", "/Script/DialogueSystem.", "/Script
     if okB then break end
 end
 
-LoopAsync(1000, function()
-    ExecuteInGameThread(function()
-        if Active() then pcall(FixPartyStrip, false); pcall(ExtendInspectionPortraits, false); pcall(UpdateExtraHighlights); pcall(FitHeroRows) end
-    end)
-    return false
+Every(1000, function()
+    if not Active() then return end
+    NewScan(); pcall(PruneExtras)
+    pcall(FixPartyStrip, false); pcall(ExtendInspectionPortraits, false); pcall(UpdateExtraHighlights); pcall(FitHeroRows)
 end)
 
-RegisterKeyBind(Key.TAB, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
+local function ToggleEnabled()
     ReadConfig()
     local newState = not CFG.Enabled
     if WriteEnabled(newState) then
         CFG.Enabled = newState
         Out("%s — applies to the next new campaign / lobby (party size %d)", newState and "ENABLED" or "DISABLED", CFG.PartySize)
     end
-end)
+end
 
-RegisterKeyBind(Key.END, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
-    ExecuteInGameThread(function()
-        ReadConfig()
-        if not Active() then Out("disabled — nothing to apply") return end
-        pcall(FixLayout); pcall(WidenCamera)
-        for _, s in ipairs(Instances("MultiplayerOptionsScreen")) do pcall(ExtendPlayersRadio, s) end
-        for _, s in ipairs(Instances("SessionSetupScreen")) do pcall(FixPlayerTiles, s) end
-        for _, s in ipairs(Instances("MultiplayerSettingsScreen")) do pcall(FixPlayerTiles, s) end
-        pcall(FixPartyStrip, true)
-        pcall(FitHeroRows)
-        pcall(ExtendInspectionPortraits, true)
-        Out("re-applied layout/camera/host-screen tweaks")
-    end)
-end)
+local function Reapply()
+    ReadConfig()
+    if not Active() then Out("disabled — nothing to apply") return end
+    pcall(FixLayout); pcall(WidenCamera)
+    for _, s in ipairs(Instances("MultiplayerOptionsScreen")) do pcall(ExtendPlayersRadio, s) end
+    for _, s in ipairs(Instances("SessionSetupScreen")) do pcall(FixPlayerTiles, s) end
+    for _, s in ipairs(Instances("MultiplayerSettingsScreen")) do pcall(FixPlayerTiles, s) end
+    NewScan()
+    pcall(FixPartyStrip, true)
+    pcall(FitHeroRows)
+    pcall(ExtendInspectionPortraits, true)
+    Out("re-applied layout/camera/host-screen tweaks")
+end
 
-RegisterKeyBind(Key.BACKSPACE, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function()
-    ExecuteInGameThread(function()
-        local ok, err = pcall(Report)
-        if not ok then Out("report failed: %s", tostring(err)) end
-    end)
+RegisterKeyBind(Key.TAB, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.toggle = true end)
+RegisterKeyBind(Key.END, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.reapply = true end)
+RegisterKeyBind(Key.BACKSPACE, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.report = true end)
+
+-- the game-thread side of the key binds and of the click emulation
+Every(50, function()
+    if PRESSED.click then PRESSED.click = false; if Active() then NewScan(); pcall(ClickExtraPortraits) end end
+    if PRESSED.heal then PRESSED.heal = false; pcall(HealNow) end
+    if PRESSED.toggle then PRESSED.toggle = false; pcall(ToggleEnabled) end
+    if PRESSED.reapply then PRESSED.reapply = false; pcall(Reapply) end
+    if PRESSED.report then PRESSED.report = false; NewScan(); local ok, err = pcall(Report); if not ok then Out("report failed: %s", tostring(err)) end end
 end)
 
 Out("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift+End re-apply, Ctrl+Shift+Backspace status",

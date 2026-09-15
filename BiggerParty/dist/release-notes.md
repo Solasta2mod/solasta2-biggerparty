@@ -1,4 +1,18 @@
-For Solasta II Early Access build **CL-112340**.
+For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
+
+**1.2.1** — the 14 Sep patch (CL-112436) is verified; the short/long rest screens now show all six heroes (the row is
+scaled as a whole so the text stays readable); the crate/chest and merchant screens get six portraits like the
+inventory, with the carried weight under them, and heroes 5 and 6 can loot; after a story scene control goes back to the hero you had selected, through the game's own selection;
+and a watchdog fixes a follower that has lost track of the party leader (the "hero wandering like an NPC" report).
+This also covers the reported focus problems after story scenes in 1.2 — the selection jumping to another hero,
+clicking the current hero doing nothing until you Tab away and back, and combat turn focus getting confused: all
+of them came from the mod's temporary possession at scene start not being handed back through the game's own
+selection. 1.2.1 hands it back properly and never touches selection during combat.
+
+Also in 1.2.1, a crash fix: everything the mod does now runs on the game thread. UE4SS ran the mod's timers on
+its own thread and its hotkeys on the input thread with no lock against the game thread, and a Lua state used
+from two threads corrupts itself — the "crash while looting" (and the odd random crash before it) was that,
+worst with a loot bag open because that is when the mod's per-second pass is busiest.
 
 **New in 1.2 — story dialogues work with six heroes.**
 - Scenes with choices (the family-roles scene after the first short rest, and everything after it) now open
