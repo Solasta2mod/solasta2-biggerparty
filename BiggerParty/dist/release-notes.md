@@ -1,5 +1,11 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.3** — enemy hit points. `EnemyHitPointsPercent` in `BiggerParty.ini` (default 100) scales hostile monsters'
+maximum hit points; Ctrl+Shift+Up / Down change it in game by 10. The host applies it to every hostile monster
+whose maximum is still its book value (later spawns and loaded saves included), damage already taken is kept,
+and 100 puts the monsters the mod raised back. No Difficulty-screen row for it yet: that is native work for a
+later release.
+
 **1.2.1** — the 14 Sep patch (CL-112436) is verified; the short/long rest screens now show all six heroes (the row is
 scaled as a whole so the text stays readable); the crate/chest and merchant screens get six portraits like the
 inventory, with the carried weight under them, and heroes 5 and 6 can loot; after a story scene control goes back to the hero you had selected, through the game's own selection;

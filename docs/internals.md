@@ -177,6 +177,38 @@ fifth are assigned in a plain loop, and the anchor count comes from the party, s
 anchors — the missing-anchor symptom seen during the investigation was a consequence of the stale leader,
 not of the anchor count.
 
+## Enemy hit points
+
+A monster's maximum hit points come from `UCharacterBuildingComponent::InitMonsterHitPoints`: it makes an
+outgoing spec of the "init health" effect (`URulesetImplementationSettings.InitHealthClass`, the asset
+`GE_SetMaxHealth`: instant, override, set-by-caller tag `Ruleset.Health.Max`), sets the definition's
+`MaxHitPoints` as the magnitude and applies it. `LostHitPoints` is a separate attribute, so current hit
+points follow the maximum.
+
+Re-applying that effect from Lua does not work, and the reason is worth remembering: for a UFunction's
+struct *return value* UE4SS does not hand back a struct userdata but converts the struct into a Lua table
+field by field (`Operation::GetNonTrivialLocal` in `LuaUObject.cpp`). `FGameplayEffectSpecHandle` and
+`FGameplayEffectContextHandle` have no reflected fields, so `MakeOutgoingSpec` returns `{}` and every call
+that takes the handle back receives a zeroed, invalid one — silently, without an error. Any Blueprint API
+that threads opaque handles between calls is out of reach of UE4SS Lua.
+
+What works instead (`ScaleEnemyHitPoints` in `main.lua`): find the `HealthAttributeSet` in the monster's
+`BrimstoneAbilitySystemComponent.SpawnedAttributes`, write `MaxHitPoints.BaseValue` and `CurrentValue`
+directly, call the set's own `OnRep_MaxHitPoints(OldValue)` — the rep-notify path integrates a new base
+the way a replicated update is integrated (aggregator base if one exists, change listeners, so the HP bar
+and the health conditions refresh) — and `UNetPushModelHelpers::MarkPropertyDirty` so push-model
+replication sends it to the clients. Monsters are the `RulesetActor`s whose `GetBaseDefinition()` is a
+`MonsterDefinition` (the `BaseDefinition` property is not a plain object reference in Lua; use the getter);
+hostility is the actor's `GetTeamAttitudeTowardsParty()` (0 friendly, 1 neutral, 2 hostile); only the host
+(`HasAuthority`) writes, every three seconds. A monster is touched only while its base equals the
+definition's value or a value the mod set, so nothing compounds and a loaded save is recognised.
+
+The Difficulty screen's rows are built in C++ (`UBrimstoneGameSettingRegistry::InitializeGameSettings`):
+`NewObject` of a `UGameSettingValueScalarDynamic` subclass, data sources made of reflected getter/setter
+function names on `UBrimstoneSettingsLocal`, per-preset values from a `FGameDifficultyData` table. A real
+"enemy hit points" row means native code that adds two UFunctions to that class and builds those objects
+after the registry initialises — not done; the value lives in the ini and on two hotkeys.
+
 ## Re-signing after a game patch
 
 1. Point the tools at the new build and confirm each signature still matches exactly once:
@@ -209,6 +241,7 @@ Python 3, no third-party dependencies except `capstone` for the disassembler.
 | `ue4ss_fn.py` | function bounds (from `.pdata`) and referenced strings for addresses inside UE4SS.dll |
 | `luawalk.py` / `dumplib.py` | walk the Lua call stack inside a minidump (frames, current line, values near the top) |
 
-Two gotchas worth keeping: UE4SS Lua `TArray` appends invalidate element references taken before the append
+Three gotchas worth keeping: a UFunction's struct return value comes back as a plain table, so opaque
+handles cannot be passed on (see *Enemy hit points*); UE4SS Lua `TArray` appends invalidate element references taken before the append
 (hold values, not references), and `RegisterHook` only sees functions called through `ProcessEvent` — a
 function invoked directly from C++, like `InitEditionActors`, will never fire a hook.

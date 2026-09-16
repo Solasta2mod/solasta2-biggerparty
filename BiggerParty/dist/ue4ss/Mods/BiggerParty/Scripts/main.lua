@@ -16,11 +16,13 @@
 --   PartySize=6
 --   MaxPlayers=6                 (human players per hosted session; default = PartySize)
 --   CameraFovMultiplier=1.35     (optional; default grows with PartySize)
+--   EnemyHitPointsPercent=100    (hostile monsters' maximum hit points, % of their definition; host only)
 --
 -- Hotkeys:
 --   Ctrl+Shift+Tab         toggle Enabled on/off (takes effect for the next new campaign / lobby)
 --   Ctrl+Shift+End         re-apply the UI tweaks on the current screen
 --   Ctrl+Shift+Backspace   status report to the UE4SS log (config, DLL log tail, party/slot counts, roles)
+--   Ctrl+Shift+Up / Down   enemy hit points +10% / -10% (written to the ini, applied to the monsters around)
 
 local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
@@ -76,7 +78,7 @@ local function After(ms, fn)      -- fn runs on the game thread once, after ms
     end
 end
 -- key binds only set one of these; the game-thread poll in the wiring section acts on them
-local PRESSED = { click = false, toggle = false, reapply = false, report = false, heal = false }
+local PRESSED = { click = false, toggle = false, reapply = false, report = false, heal = false, hpUp = false, hpDown = false }
 
 --------------------------------------------------------------------------------------------------
 -- Config (shared ini)
@@ -112,7 +114,7 @@ local function FindIniPath()
     return nil
 end
 
-local CFG = { Enabled = true, PartySize = 6, MaxPlayers = 0, CameraFovMultiplier = nil }   -- MaxPlayers 0 = follow PartySize
+local CFG = { Enabled = true, PartySize = 6, MaxPlayers = 0, CameraFovMultiplier = nil, EnemyHitPointsPercent = 100 }   -- MaxPlayers 0 = follow PartySize
 
 local function ReadConfig()
     local p = FindIniPath()
@@ -123,29 +125,36 @@ local function ReadConfig()
             if k:lower() == "enabled" then CFG.Enabled = (v ~= "0")
             elseif k:lower() == "partysize" then CFG.PartySize = tonumber(v) or 6
             elseif k:lower() == "maxplayers" then CFG.MaxPlayers = tonumber(v) or 0
-            elseif k:lower() == "camerafovmultiplier" then CFG.CameraFovMultiplier = tonumber(v) end
+            elseif k:lower() == "camerafovmultiplier" then CFG.CameraFovMultiplier = tonumber(v)
+            elseif k:lower() == "enemyhitpointspercent" then CFG.EnemyHitPointsPercent = tonumber(v) or 100 end
         end
     end
     if CFG.PartySize < 1 then CFG.PartySize = 1 end
     if CFG.PartySize > 8 then CFG.PartySize = 8 end
     if CFG.MaxPlayers <= 0 then CFG.MaxPlayers = CFG.PartySize end
     if CFG.MaxPlayers > CFG.PartySize then CFG.MaxPlayers = CFG.PartySize end
+    CFG.EnemyHitPointsPercent = math.floor((CFG.EnemyHitPointsPercent or 100) + 0.5)
+    if CFG.EnemyHitPointsPercent < 50 then CFG.EnemyHitPointsPercent = 50 end
+    if CFG.EnemyHitPointsPercent > 500 then CFG.EnemyHitPointsPercent = 500 end
 end
 
-local function WriteEnabled(enabled)
+-- rewrite one key in the ini (kept in place; appended when missing). The DLL's watcher re-reads it within a second.
+local function WriteIniValue(key, value)
     local p = FindIniPath()
-    if not p then Out("config: cannot toggle — %s not found", INI_NAME) return false end
+    if not p then Out("config: cannot write %s — %s not found", key, INI_NAME) return false end
     local lines, seen = {}, false
+    local pat = "^%s*" .. key:gsub("%a", function(c) return "[" .. c:upper() .. c:lower() .. "]" end) .. "%s*="
     for line in io.lines(p) do
-        if line:match("^%s*[Ee]nabled%s*=") then lines[#lines + 1] = "Enabled=" .. (enabled and "1" or "0"); seen = true
+        if line:match(pat) then lines[#lines + 1] = key .. "=" .. value; seen = true
         else lines[#lines + 1] = line end
     end
-    if not seen then lines[#lines + 1] = "Enabled=" .. (enabled and "1" or "0") end
+    if not seen then lines[#lines + 1] = key .. "=" .. value end
     local f = io.open(p, "w")
     if not f then Out("config: cannot write %s", p) return false end
     f:write(table.concat(lines, "\n"), "\n"); f:close()
     return true
 end
+local function WriteEnabled(enabled) return WriteIniValue("Enabled", enabled and "1" or "0") end
 
 local function Active() return CFG.Enabled and CFG.PartySize > 4 end
 local function FovMult() return CFG.CameraFovMultiplier or (1 + (CFG.PartySize - 4) * 0.175) end
@@ -1215,6 +1224,156 @@ local function HealNow()
 end
 RegisterKeyBind(Key.F, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.heal = true end)
 
+--------------------------------------------------------------------------------------------------
+-- Enemy hit points. A monster gets its maximum hit points from the game's own "init health" gameplay
+-- effect (URulesetImplementationSettings.InitHealthClass), applied at creation with the definition's
+-- MaxHitPoints as a set-by-caller magnitude (UCharacterBuildingComponent::InitMonsterHitPoints). That
+-- effect cannot be re-applied from Lua: UE4SS turns the opaque spec handles into empty tables. So, with
+-- EnemyHitPointsPercent in the ini, the host writes the scaled value into the HealthAttributeSet's
+-- MaxHitPoints data of every hostile monster whose base still equals its definition's, then hands it to
+-- the ability system the way a replicated update arrives (OnRep_MaxHitPoints: aggregator base, change
+-- listeners) and marks the property dirty for push-model replication to the other players. Lost hit
+-- points are tracked separately, so current hit points follow the maximum.
+--------------------------------------------------------------------------------------------------
+local HP_DONE = {}          -- ruleset actor address -> { name = full name, value = the base this mod set }
+local HP_WARNED = {}
+
+local function HealthSetOf(actor)
+    local asc = Try(function() return actor.BrimstoneAbilitySystemComponent end)
+    if not (asc and asc:IsValid()) then return nil end
+    local sets = Try(function() return asc.SpawnedAttributes end)
+    for i = 1, Count(sets) do
+        local set = sets[i]
+        if set and set:IsValid() and ClassName(set) == "HealthAttributeSet" then return set, asc end
+    end
+    return nil, asc
+end
+
+-- write a new maximum into the attribute data, then let the ability system integrate it as it would a
+-- replicated value (aggregator base and change listeners), and mark it dirty for the other players
+local function ApplyMaxHitPoints(hs, value)
+    local oldBase = Try(function() return hs.MaxHitPoints.BaseValue end)
+    local oldCur = Try(function() return hs.MaxHitPoints.CurrentValue end)
+    if oldBase == nil or oldCur == nil then return false, "cannot read MaxHitPoints" end
+    local ok, err = pcall(function()
+        hs.MaxHitPoints.BaseValue = value
+        hs.MaxHitPoints.CurrentValue = value + (oldCur - oldBase)     -- keep whatever modifiers add on top
+    end)
+    if not ok then return false, "write failed: " .. tostring(err) end
+    local notes = {}
+    local okR, errR = pcall(function() hs:OnRep_MaxHitPoints({ BaseValue = oldBase, CurrentValue = oldCur }) end)
+    if not okR then notes[#notes + 1] = "listeners not told: " .. tostring(errR) end
+    local helpers = StaticFindObject("/Script/Engine.Default__NetPushModelHelpers")
+    if helpers and helpers:IsValid() then
+        local okD, errD = pcall(function() helpers:MarkPropertyDirty(hs, FName("MaxHitPoints")) end)
+        if not okD then notes[#notes + 1] = "not marked for replication: " .. tostring(errD) end
+    else
+        notes[#notes + 1] = "NetPushModelHelpers not found (no replication mark)"
+    end
+    return true, table.concat(notes, "; ")
+end
+
+-- ruleset actors built from a monster definition, with their attitude towards the party (2 = hostile)
+local HP_ERR_LOGGED = {}
+local function HpError(where, err)
+    if not HP_ERR_LOGGED[where] then HP_ERR_LOGGED[where] = true; Out("enemy hp: error in %s: %s", where, tostring(err)) end
+end
+local function Monsters()
+    local out = {}
+    local okL, list = pcall(Instances, "RulesetActor")
+    if not okL then HpError("Instances(RulesetActor)", list) return out end
+    for _, actor in ipairs(list) do
+        local okA, errA = pcall(function()
+            -- the BaseDefinition property is not a plain object reference (no IsValid on it); the getter is
+            local def = Try(function() return actor:GetBaseDefinition() end)
+            if not (def and type(def) == "userdata" and def.IsValid) then
+                local raw = Try(function() return actor.BaseDefinition end)
+                if not HP_ERR_LOGGED.basedef then
+                    HP_ERR_LOGGED.basedef = true
+                    Out("enemy hp: GetBaseDefinition() gave %s; BaseDefinition property is %s", tostring(def), type(raw) == "userdata" and ("userdata " .. tostring(Try(function() return raw:GetFullName() end) or Try(function() return raw:ToString() end) or "?")) or tostring(raw))
+                end
+                def = (type(raw) == "userdata" and raw.IsValid) and raw or nil
+            end
+            if def and def:IsValid() and ClassName(def) == "MonsterDefinition" then
+                out[#out + 1] = { actor = actor, def = def, attitude = Try(function() return actor:GetTeamAttitudeTowardsParty() end) }
+            end
+        end)
+        if not okA then HpError("Monsters", errA) end
+    end
+    return out
+end
+
+local function ScaleEnemyHitPoints(verbose)
+    local pct = CFG.EnemyHitPointsPercent or 100
+    if pct == 100 and next(HP_DONE) == nil and not verbose then return 0 end
+    local changed = 0
+    for _, e in ipairs(Monsters()) do
+        local actor, def = e.actor, e.def
+        local key = actor:GetAddress()
+        local name = ShortName(actor:GetFullName())
+        local rec = HP_DONE[key]
+        if rec and rec.name ~= name then rec = nil; HP_DONE[key] = nil; HP_WARNED[key] = nil end
+        if e.attitude == 2 and Try(function() return actor:HasAuthority() end) then
+            local hs, asc = HealthSetOf(actor)
+            local defHP = Try(function() return def.MaxHitPoints end)
+            local base = hs and Try(function() return hs.MaxHitPoints.BaseValue end)
+            if hs and asc and defHP and defHP > 0 and base then
+                local target = math.floor(defHP * pct / 100 + 0.5)
+                local unscaled = math.abs(base - defHP) < 0.5
+                local ours = rec and math.abs(base - rec.value) < 0.5
+                if math.abs(base - target) < 0.5 then
+                    HP_DONE[key] = { name = name, value = target }
+                elseif unscaled or ours then
+                    local ok, err = ApplyMaxHitPoints(hs, target)
+                    local after = Try(function() return hs.MaxHitPoints.BaseValue end) or -1
+                    if ok and math.abs(after - target) < 0.5 then
+                        HP_DONE[key] = { name = name, value = target }
+                        changed = changed + 1
+                        Out("enemy hp: %s %d -> %d (%d%% of %d; current now %s)%s", name, math.floor(base + 0.5), math.floor(after + 0.5), pct, defHP,
+                            tostring(Try(function() return hs.MaxHitPoints.CurrentValue end)), (err and err ~= "") and (" [" .. err .. "]") or "")
+                    elseif not HP_WARNED[key] then
+                        HP_WARNED[key] = true
+                        Out("enemy hp: %s: could not set %d -> %d: %s (base now %s)", name, math.floor(base + 0.5), target, ok and "no change" or tostring(err), tostring(after))
+                    end
+                elseif not HP_WARNED[key] then
+                    HP_WARNED[key] = true
+                    Out("enemy hp: %s left alone: base %d is neither its definition's %d nor a value this mod set", name, math.floor(base + 0.5), defHP)
+                end
+            end
+        end
+    end
+    return changed
+end
+
+local function AdjustEnemyHitPoints(delta)
+    ReadConfig()
+    local v = (CFG.EnemyHitPointsPercent or 100) + delta
+    if v < 50 then v = 50 elseif v > 500 then v = 500 end
+    CFG.EnemyHitPointsPercent = v
+    if WriteIniValue("EnemyHitPointsPercent", tostring(v)) then
+        local okS, n = pcall(ScaleEnemyHitPoints, false)
+        Out("enemy hit points: %d%% of the monster definition (%s; Ctrl+Shift+Up / Down)", v, okS and (tostring(n) .. " monster(s) changed now") or ("error: " .. tostring(n)))
+    end
+end
+
+local function ReportEnemyHitPoints()
+    Out("enemy hp: setting %d%% (%d monster(s) set by the mod so far)", CFG.EnemyHitPointsPercent or 100, (function() local n = 0 for _ in pairs(HP_DONE) do n = n + 1 end return n end)())
+    local list = Monsters()
+    for i = 1, math.min(#list, 16) do
+        local e = list[i]
+        local okR, errR = pcall(function()
+            local hs = HealthSetOf(e.actor)
+            local rec = HP_DONE[e.actor:GetAddress()]
+            Out("enemy hp:   %s attitude=%s def=%s base=%s current=%s lost=%s%s", ShortName(e.actor:GetFullName()), tostring(e.attitude),
+                tostring(Try(function() return e.def.MaxHitPoints end)), tostring(hs and Try(function() return hs.MaxHitPoints.BaseValue end)),
+                tostring(hs and Try(function() return hs.MaxHitPoints.CurrentValue end)), tostring(hs and Try(function() return hs.LostHitPoints.CurrentValue end)),
+                rec and (" (set to " .. tostring(rec.value) .. " by the mod)") or "")
+        end)
+        if not okR then Out("enemy hp:   %s: %s", ShortName(e.actor:GetFullName()), tostring(errR)) end
+    end
+    Out("enemy hp: %d monster(s) in the level", #list)
+end
+
 -- What binds a chest-screen portrait to its hero? Dump an original and one of ours: class chain with
 -- property values and functions, extensions (view models), and the widget tree with texts.
 local function DescribeValue(v)
@@ -1341,6 +1500,7 @@ local function Report()
     pcall(ReportFamilyRoles)
     pcall(ReportFormation)
     pcall(ReportPortraitBindings)
+    pcall(ReportEnemyHitPoints)
 end
 
 --------------------------------------------------------------------------------------------------
@@ -1580,6 +1740,14 @@ local function Reapply()
     Out("re-applied layout/camera/host-screen tweaks")
 end
 
+Every(3000, function()
+    if not CFG.Enabled then return end
+    local ok, err = pcall(ScaleEnemyHitPoints, false)
+    if not ok then HpError("sweep", err) end
+end)
+
+RegisterKeyBind(Key.UP_ARROW, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.hpUp = true end)
+RegisterKeyBind(Key.DOWN_ARROW, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.hpDown = true end)
 RegisterKeyBind(Key.TAB, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.toggle = true end)
 RegisterKeyBind(Key.END, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.reapply = true end)
 RegisterKeyBind(Key.BACKSPACE, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.report = true end)
@@ -1588,6 +1756,8 @@ RegisterKeyBind(Key.BACKSPACE, { ModifierKey.CONTROL, ModifierKey.SHIFT }, funct
 Every(50, function()
     if PRESSED.click then PRESSED.click = false; if Active() then NewScan(); pcall(ClickExtraPortraits) end end
     if PRESSED.heal then PRESSED.heal = false; pcall(HealNow) end
+    if PRESSED.hpUp then PRESSED.hpUp = false; pcall(AdjustEnemyHitPoints, 10) end
+    if PRESSED.hpDown then PRESSED.hpDown = false; pcall(AdjustEnemyHitPoints, -10) end
     if PRESSED.toggle then PRESSED.toggle = false; pcall(ToggleEnabled) end
     if PRESSED.reapply then PRESSED.reapply = false; pcall(Reapply) end
     if PRESSED.report then PRESSED.report = false; NewScan(); local ok, err = pcall(Report); if not ok then Out("report failed: %s", tostring(err)) end end

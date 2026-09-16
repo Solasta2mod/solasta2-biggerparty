@@ -36,13 +36,24 @@ Uninstall: run the installer again and press **u**.
 | Story dialogues | work with six heroes (the mod keeps a participating hero in party slot 1 while a dialogue runs) |
 | **Ctrl+Shift+End** | re-apply the UI tweaks on the current screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
+| **Ctrl+Shift+Up / Down** | enemy hit points +10% / −10% (see below) |
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
-was only tested with 6). Logs: `BiggerParty.log` (native patcher) and `ue4ss\UE4SS.log` (Lua).
+was only tested with 6; `EnemyHitPointsPercent=100`). Logs: `BiggerParty.log` (native patcher) and `ue4ss\UE4SS.log` (Lua).
 
 GiveSpellbook (host / single player only): **Ctrl+Delete** grants a Wizard spellbook to any hero whose
 spellcasting reports it missing; **Ctrl+Backspace** reports; **Ctrl+Shift+Delete** forces one on everyone
 without a book.
+
+## Enemy hit points
+
+Six heroes make fights easier. `EnemyHitPointsPercent` in `BiggerParty.ini` (default `100`, 50–500) scales
+the maximum hit points of hostile monsters: `150` gives them one and a half times their book value.
+**Ctrl+Shift+Up / Ctrl+Shift+Down** change it in game by 10 and write it to the ini. The host applies it
+(the values replicate to everyone else) to every hostile monster whose maximum is still the definition's,
+so it also covers monsters that spawn later and saves loaded afterwards; damage already taken is kept.
+Setting it back to `100` restores the monsters the mod changed; a monster raised under a different
+percentage in an earlier session is left as it is. There is no row for it on the Difficulty screen yet.
 
 ## Known limitations
 
