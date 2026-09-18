@@ -68,6 +68,11 @@ percentage in an earlier session is left as it is. There is no row for it on the
   the game's own selection, so the party keeps following you. If a follower ever loses track of the leader
   and wanders, the mod notices within two seconds and re-selects your hero (you may see the selection flick
   to another hero and back once).
+- **Multiplayer sessions.** Each player's followers follow that player's selected hero, and the mod only
+  ever touches the heroes your own player state controls. In a story scene each player gets the dialogue
+  through a hero of theirs that the scene bound; a scene binds a fixed set of participants, so with six
+  heroes a player whose heroes were all left out sees no choice and does not vote. If a player drops and
+  rejoins, the game hands their heroes around; if a scene then fails to open for someone, save and reload.
 - **Players versus heroes.** `PartySize` is the number of heroes; `MaxPlayers` (in `BiggerParty.ini`) is
   the number of human players a hosted session accepts and defaults to `PartySize`. Set `MaxPlayers=4` to
   keep the vanilla four-seat lobby with a six-hero party.

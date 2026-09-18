@@ -1,5 +1,12 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.3.1** — multiplayer fixes from the first three-player session. The party-following watchdog treated every
+follower as the host's and re-selected the host's hero every ten seconds (other players' followers follow
+their own leader; the mod now only looks at the heroes your player state controls, on the host). At a story
+scene each player now only possesses a hero of their own; the host used to grab other players' followers.
+The party strip no longer un-hides plates the game hid, which duplicated a portrait after a player rejoined.
+Everyone in a session should update.
+
 **1.3** — enemy hit points. `EnemyHitPointsPercent` in `BiggerParty.ini` (default 100) scales hostile monsters'
 maximum hit points; Ctrl+Shift+Up / Down change it in game by 10. The host applies it to every hostile monster
 whose maximum is still its book value (later spawns and loaded saves included), damage already taken is kept,

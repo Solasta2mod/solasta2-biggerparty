@@ -451,9 +451,24 @@ local function FixStripAncestors(tbl, factor, verbose)
 end
 
 
+local function SessionIsMultiplayer()
+    for _, vm in ipairs(Instances("GameSessionViewModel")) do
+        local mp = Try(function() return vm.IsMultiplayer end)
+        if mp ~= nil then return mp end
+    end
+    return false
+end
+
 local function FixPartyStrip(verbose)
     if not Active() then return end
     local sizeBoxClass = StaticFindObject("/Script/UMG.SizeBox")
+    -- A hidden plate is only ours to show in single player, and only while fewer plates are visible than
+    -- there are heroes. In multiplayer each player's group holds that player's heroes and the game hides
+    -- plates on purpose (a dropped player's characters, for one): showing them again duplicated a portrait.
+    local heroes = 0
+    if not SessionIsMultiplayer() then
+        for _, pcmp in ipairs(Instances("PartyComponent")) do heroes = math.max(heroes, Count(Try(function() return pcmp.Party end))) end
+    end
     for _, grp in ipairs(Instances("PlayerSelectionGroup")) do
         local visible = Try(function() return grp:IsVisible() end)
         if visible then
@@ -461,15 +476,18 @@ local function FixPartyStrip(verbose)
             local sb = Try(function() return grp.CharacterPlatesSB end)
             local n = tbl and tbl:IsValid() and (Try(function() return tbl:GetChildrenCount() end) or 0) or -1
             local shown, changed = 0, 0
+            local hidden = {}
             for k = 0, math.max(n, 0) - 1 do
                 local plate = Try(function() return tbl:GetChildAt(k) end)
                 if plate and plate:IsValid() then
                     local vis = Try(function() return plate:GetVisibility() end)     -- 0 Visible 1 Collapsed 2 Hidden 3 HitTestInvisible 4 SelfHitTestInvisible
-                    if vis == 1 or vis == 2 then
-                        if pcall(function() plate:SetVisibility(4) end) then changed = changed + 1 end
-                    end
-                    if Try(function() return plate:IsVisible() end) then shown = shown + 1 end
+                    if vis == 1 or vis == 2 then hidden[#hidden + 1] = plate
+                    elseif Try(function() return plate:IsVisible() end) then shown = shown + 1 end
                 end
+            end
+            for _, plate in ipairs(hidden) do
+                if shown >= heroes then break end
+                if pcall(function() plate:SetVisibility(4) end) then changed = changed + 1; shown = shown + 1 end
             end
             local sbInfo = "no size box"
             if sb and sb:IsValid() and sb:IsA(sizeBoxClass) then
@@ -725,6 +743,63 @@ end
 local function LocalSelectionState()
     for _, c in ipairs(Instances("BrimstoneSelectionStateComponent")) do return c end
     return nil
+end
+
+-- Multiplayer: each player controls a subset of the party, and each player's followers follow that
+-- player's selected hero. The player state lists the ruleset actors a player controls (replicated);
+-- only the host runs the followers' AI controllers.
+local function LocalPlayerState()
+    local pc = UEHelpers.GetPlayerController()
+    local ps = pc and pc:IsValid() and Try(function() return pc.PlayerState end)
+    return (ps and ps:IsValid()) and ps or nil
+end
+-- the player state controlling a ruleset actor, by the game state's own lookup
+local function OwnerStateOf(hero)
+    if not (hero and hero:IsValid()) then return nil end
+    for _, gs in ipairs(Instances("BrimstoneGameState")) do
+        local ps = Try(function() return gs:FindPlayerStateControllingActor(hero) end)
+        if ps and ps.IsValid and ps:IsValid() then return ps end
+        return nil
+    end
+    return nil
+end
+local function IsMine(hero)      -- hero: ruleset actor
+    if not (hero and hero:IsValid()) then return false end
+    local mine = LocalPlayerState()
+    local owner = OwnerStateOf(hero)
+    if owner and mine then return owner:GetAddress() == mine:GetAddress() end
+    -- no answer from the game state: ask the session's character slot, else assume single player
+    for _, vm in ipairs(Instances("GameSessionViewModel")) do
+        local slot = Try(function() return vm:FindCharacterSlotFromRulesetActor(hero) end)
+        if slot and slot.IsValid and slot:IsValid() then
+            local r = Try(function() return slot:GetIsControlledByMe() end)
+            if r ~= nil then return r end
+        end
+        if Try(function() return vm.IsMultiplayer end) == false then return true end
+    end
+    return true
+end
+local function MyHeroSet()      -- address set of the party's ruleset actors the local player controls
+    local set, n = {}, 0
+    local party = PartyArray()
+    for i = 1, Count(party) do
+        local m = party[i]
+        if m and m:IsValid() and IsMine(m) then set[m:GetAddress()] = true; n = n + 1 end
+    end
+    return set, n
+end
+local function IsHost()
+    for _, vm in ipairs(Instances("GameSessionViewModel")) do
+        local h = Try(function() return vm.AmIHost end)
+        if h ~= nil then return h end
+    end
+    local pc = UEHelpers.GetPlayerController()
+    return (pc and pc:IsValid() and Try(function() return pc:HasAuthority() end)) or false
+end
+local function OwnerNameOf(hero)  -- the player controlling a hero, for the report
+    local ps = OwnerStateOf(hero)
+    if not ps then return "nobody" end
+    return Str(Try(function() return ps:GetPlayerName() end)) or ShortName(ps:GetFullName())
 end
 
 -- 0-based party index of the hero the screen currently shows
@@ -1139,6 +1214,15 @@ local function ReportFormation()
         (leader and leader:IsValid()) and ShortName(leader:GetFullName()) or "none",
         tostring(mgr and Count(Try(function() return mgr.DesignAnchors end))), tostring(mgr and Count(Try(function() return mgr.ProvidedDesignAnchors end))),
         tostring(mgr and Try(function() return mgr.PartyFormationRadius end)), tostring(mgr and Try(function() return mgr.PartyFormationAngleSpread end)))
+    local ps = LocalPlayerState()
+    local controlled = ps and Try(function() return ps.ControlledActors end)
+    local names = {}
+    for i = 1, Count(controlled) do
+        local a = controlled[i]
+        names[#names + 1] = (a and a:IsValid()) and (ShortName(a:GetFullName()) .. " (" .. ClassName(a) .. ")") or "invalid"
+    end
+    Out("owner: local player state %s (slot %s) controls %d actor(s): %s", ps and ShortName(ps:GetFullName()) or "none",
+        tostring(ps and Try(function() return ps.PlayerSlotIndex end)), Count(controlled), table.concat(names, ", "))
     local anchors = Instances("PartyFormationAnchor")
     Out("formation: %d anchor(s)", #anchors)
     for i, a in ipairs(anchors) do
@@ -1157,8 +1241,8 @@ local function ReportFormation()
             local pos = pawn and Try(function() return pawn:K2_GetActorLocation() end)
             local anchorTo = ctrl and Try(function() return ctrl:GetAnchorToFollow() end)
             local leaderTo = ctrl and Try(function() return ctrl:GetLeaderToFollow() end)
-            Out("   hero %d %s pawn=%s controller=%s dist-to-leader=%.0f anchor=%s leader=%s", i, ShortName(hero:GetFullName()):gsub("_%d+$", ""),
-                pawn and "ok" or "none", (ctrl and ctrl:IsValid()) and ClassName(ctrl) or "NONE", Dist(pos, lpos),
+            Out("   hero %d %s pawn=%s controller=%s owner=%s mine=%s dist-to-leader=%.0f anchor=%s leader=%s", i, ShortName(hero:GetFullName()):gsub("_%d+$", ""),
+                pawn and "ok" or "none", (ctrl and ctrl:IsValid()) and ClassName(ctrl) or "NONE", OwnerNameOf(hero), tostring(IsMine(hero)), Dist(pos, lpos),
                 (anchorTo and anchorTo.IsValid and anchorTo:IsValid()) and ShortName(anchorTo:GetFullName()) or "none",
                 (leaderTo and leaderTo.IsValid and leaderTo:IsValid()) and ShortName(leaderTo:GetFullName()) or "none")
         end
@@ -1182,18 +1266,24 @@ local function RepairFormation(verbose)
     if PRE_DIALOGUE_PAWN then
         -- marker left behind by a scene whose end event never came: hand back after a grace period
         if os.clock() - (PRE_DIALOGUE_SINCE or 0) < 20 then return 0 end
-        Out("dialogue: no dialogue screen for 20 s but the pre-dialogue marker is still set; handing back now")
+        local p2 = UEHelpers.GetPlayerController()
+        local now = p2 and p2:IsValid() and Try(function() return p2:K2_GetPawn() end)
+        Out("dialogue: no dialogue screen for 20 s but the pre-dialogue marker is still set; handing back now (possessed %s; %s)",
+            (now and now:IsValid()) and ShortName(now:GetFullName()) or "none", DialogueScreensText())
         if ResyncSelectionRef then pcall(ResyncSelectionRef) end
         return 0
     end
+    if not IsHost() then return 0 end      -- followers' AI controllers only exist on the host
     local pc = UEHelpers.GetPlayerController()
     local leader = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
     if not (leader and leader:IsValid() and ShortName(leader:GetFullName()):match("^Character_")) then return 0 end
     local party = PartyArray()
     if Count(party) <= 4 then return 0 end
+    local mine = MyHeroSet()               -- other players' followers follow their own leaders
     local stale, other = nil, nil
     for i = 1, Count(party) do
-        local pawn = party[i] and party[i]:IsValid() and PawnForHero(party[i])
+        local hero = party[i]
+        local pawn = hero and hero:IsValid() and mine[hero:GetAddress()] and PawnForHero(hero)
         if pawn and pawn:GetAddress() ~= leader:GetAddress() then
             other = other or pawn
             local ctrl = Try(function() return pawn:GetController() end)
@@ -1626,12 +1716,59 @@ end
 
 local EARLY_DONE = {}         -- dialogue tag -> true once a hero has been possessed for it
 PRE_DIALOGUE_PAWN = nil       -- the pawn the player had selected before the mod possessed a participant
+DialogueScreensText = function()
+    local n, vis = 0, 0
+    for _, scr in ipairs(Instances("DialogueScreen")) do n = n + 1; if Try(function() return scr:IsVisible() end) then vis = vis + 1 end end
+    return string.format("dialogue screens: %d (%d visible)", n, vis)
+end
+
+-- Trace of the game's own screen push and option binding (a few lines per scene; kept for multiplayer reports)
+local function PawnText()
+    local p2 = UEHelpers.GetPlayerController()
+    local now = p2 and p2:IsValid() and Try(function() return p2:K2_GetPawn() end)
+    return (now and now:IsValid()) and ShortName(now:GetFullName()) or "none"
+end
+for _, spec in ipairs({
+    { "/Script/Brimstone.BrimstoneDialogueParticipantComponent:BeforePushDialogueScreen", "before push" },
+    { "/Script/Brimstone.BrimstoneDialogueParticipantComponent:AfterPushDialogueScreen", "after push" },
+    { "/Script/Brimstone.DialogueScreen:StartDialogue", "screen StartDialogue" },
+    { "/Script/Brimstone.DialogueScreen:BindConversationOptions", "screen BindConversationOptions" },
+    { "/Script/Brimstone.DialogueScreen:UnbindConversationOptions", "screen UnbindConversationOptions" },
+}) do
+    local path, label = spec[1], spec[2]
+    local okH, errH = pcall(function()
+        RegisterHook(path, function(Context)
+            local self = Context:get()
+            local owner = Try(function() return self:GetOwner() end)
+            Out("trace: %s on %s (owner %s); possessed %s; %s", label, ShortName(self:GetFullName()),
+                (owner and owner:IsValid()) and ShortName(owner:GetFullName()) or "-", PawnText(), DialogueScreensText())
+        end)
+    end)
+    if not okH then Out("trace: no hook for %s: %s", path, tostring(errH)) end
+end
+
+local SWAP_DONE = {}
 local function PossessEarly(self, tag)
     if not Active() then return end
-    if not tag or tag == "None" or tag == "" or EARLY_DONE[tag] then return end
+    if not tag or tag == "None" or tag == "" then return end
     local owner = Try(function() return self:GetOwner() end)
     if not (owner and owner:IsValid()) then return end
     if not ShortName(owner:GetFullName()):match("^Character_") then return end
+    local hero = HeroForPawn(owner) or owner
+    -- the server resolves the choice through party member #1: the host moves the first participant it sees there
+    if not SWAP_DONE[tag] and IsHost() then
+        SWAP_DONE[tag] = true
+        After(5000, function() SWAP_DONE[tag] = nil end)
+        pcall(SwapPartyFront, hero, tag)
+    end
+    if EARLY_DONE[tag] then return end
+    -- the dialogue screen is pushed for the possessed pawn: each player possesses its own first participant
+    if not IsMine(hero) then
+        local c = Try(function() return owner:GetController() end)
+        Out("dialogue: %s - participant %s (%s) belongs to another player; leaving it to them", tag, ShortName(owner:GetFullName()),
+            (c and c:IsValid()) and ClassName(c) or "no controller")
+        return
+    end
     EARLY_DONE[tag] = true
     After(5000, function() EARLY_DONE[tag] = nil end)
     local pc = UEHelpers.GetPlayerController()
@@ -1639,15 +1776,20 @@ local function PossessEarly(self, tag)
     local current = Try(function() return pc:K2_GetPawn() end)
     if current and current:IsValid() and current:GetAddress() == owner:GetAddress() then
         Out("dialogue: %s - possessed hero %s is the first bound participant, nothing to do", tag, ShortName(owner:GetFullName()))
-        pcall(SwapPartyFront, HeroForPawn(owner) or owner, tag)
         return
     end
     if current and current:IsValid() and not PRE_DIALOGUE_PAWN then PRE_DIALOGUE_PAWN = current; PRE_DIALOGUE_SINCE = os.clock() end
     local ok, err = pcall(function() pc:Possess(owner) end)
     local after = Try(function() return pc:K2_GetPawn() end)
-    Out("dialogue: %s - possessing first bound hero %s before the scene binds: %s (pawn now %s)", tag, ShortName(owner:GetFullName()),
+    Out("dialogue: %s - possessing own first bound hero %s before the scene binds: %s (pawn now %s)", tag, ShortName(owner:GetFullName()),
         ok and "ok" or tostring(err), (after and after:IsValid()) and ShortName(after:GetFullName()) or "none")
-    pcall(SwapPartyFront, HeroForPawn(owner) or owner, tag)
+    for _, ms in ipairs({ 500, 2500 }) do
+        After(ms, function()
+            local p2 = UEHelpers.GetPlayerController()
+            local now = p2 and p2:IsValid() and Try(function() return p2:K2_GetPawn() end)
+            Out("dialogue: %s - %d ms later: possessed %s; %s", tag, ms, (now and now:IsValid()) and ShortName(now:GetFullName()) or "none", DialogueScreensText())
+        end)
+    end
 end
 
 local function OnConversationExit()

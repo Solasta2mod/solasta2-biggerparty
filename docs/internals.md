@@ -62,6 +62,31 @@ Everything that is level content or UI, none of which can be done by patching a 
 
 Source: [`BiggerParty/dist/ue4ss/Mods/BiggerParty/Scripts/main.lua`](../BiggerParty/dist/ue4ss/Mods/BiggerParty/Scripts/main.lua).
 
+## Multiplayer: whose heroes are whose
+
+The first real three-player session (two heroes each) showed where single-player assumptions hide:
+
+- **Followers.** Each player's AI followers follow *that player's* selected hero; the formation report
+  shows three leaders and three groups of anchors. The watchdog that re-selects on a stale leader now runs
+  on the host only (followers' AI controllers exist nowhere else) and only over the heroes the local player
+  controls. It had been "healing" other players' correct followers every ten seconds.
+- **Who controls a hero** comes from `ABrimstoneGameState::FindPlayerStateControllingActor(actor)` compared
+  with the local `PlayerController.PlayerState`; the character slot's `GetIsControlledByMe()` is the
+  fallback. `ABrimstonePlayerState.ControlledActors` is *not* that list — after a drop and rejoin it named
+  the wrong heroes. `GetPlayerName()` on a player state is the save's slot name, not who is at the keyboard.
+- **Story scenes.** Each client only possesses a participant it controls (`IsMine`); the host still moves
+  the first participant it sees into party slot 1, because the server resolves the vote through
+  `GetParty()[0]`. The host used to possess other players' followers, which is one way a follower ends up
+  with a stale leader. A player whose heroes were all left out of a scene's participant set gets no
+  choice; spreading roles across players would need a hook on
+  `UBrimstoneDialogueManagerComponent::GetBestActorForParticipant` and is not done.
+- **The party strip.** When a player drops, the game hands their heroes to the others and grows their
+  groups by a plate; on rejoin it takes them back and hides the plate. The strip code no longer un-hides
+  plates in multiplayer (and in single player only while fewer plates are visible than there are heroes).
+- **Hot-reload traces.** `trace:` lines on `BeforePushDialogueScreen` / `AfterPushDialogueScreen` and the
+  `DialogueScreen` start/bind functions show the game's own screen push relative to the mod's possession.
+  Do not trace `OnPossessedPawnChanged`: every participant component in the level receives it.
+
 ## Threads: everything on the game thread
 
 UE4SS runs `LoopAsync` and `ExecuteWithDelay` callbacks on its own async thread, and key-bind callbacks on
