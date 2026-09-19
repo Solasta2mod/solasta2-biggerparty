@@ -133,11 +133,11 @@ local function Children(panel)
     for i = 0, n - 1 do local c = Try(function() return panel:GetChildAt(i) end); if c and c:IsValid() then out[#out + 1] = c end end
     return out
 end
--- the game types text out letter by letter: a line is spoken once it has stopped changing for a while
+-- The game types text out letter by letter. Every text on the screen (the description, each outcome line)
+-- is a stream: a sentence is spoken as soon as it is complete, the rest once the text has stopped changing
 local STABLE_POLLS = 4          -- four polls at 250 ms: a second without change
-local SPOKEN, PENDING, SCREEN_SEEN, CHOICES_SEEN, DESC_DONE = {}, {}, nil, nil, false
--- the description is typed out: speak each sentence as soon as it is complete, the tail when it stops
-local SENT_SPOKEN, SENT_LAST, SENT_STABLE = {}, "", 0
+local SCREEN_SEEN = nil
+local STREAMS = {}              -- slot -> { last, stable, spoken, done }
 -- Markup out (the description blocks are rich text: a credit line comes as a styled run), whitespace
 -- collapsed, and the author's credit that community events carry in front is not narrated
 local function CleanText(text)
@@ -161,33 +161,21 @@ local function SplitSentences(text)
     end
     return pieces, text:sub(pos)                          -- complete sentences, and the tail still being typed
 end
-local function ConsiderSentences(text)
+local function ConsiderStream(slot, kind, text, markup)
     if not text or text == "" then return end
-    local markup = text
-    text = CleanText(text)
-    if text == "" then return end
-    if text == SENT_LAST then SENT_STABLE = SENT_STABLE + 1 else SENT_LAST = text; SENT_STABLE = 1 end
+    local st = STREAMS[slot]
+    if not st then st = { last = "", stable = 0, spoken = {}, done = false }; STREAMS[slot] = st end
+    if text == st.last then st.stable = st.stable + 1 else st.last = text; st.stable = 1 end
     local pieces, tail = SplitSentences(text)
-    if SENT_STABLE >= STABLE_POLLS then
+    if st.stable >= STABLE_POLLS then
         pieces[#pieces + 1] = tail                        -- the typewriter is done: the rest is complete too
-        if not DESC_DONE then Out("description markup: %s", (markup:sub(1, 160):gsub("%s+", " "))) end
-        DESC_DONE = true
+        if not st.done and markup then Out("%s markup: %s", slot, (markup:sub(1, 200):gsub("%s+", " "))) end
+        st.done = true
     end
     for _, sen in ipairs(pieces) do
         local t = sen:gsub("^%s+", ""):gsub("%s+$", "")
-        if t ~= "" and not SENT_SPOKEN[t] then SENT_SPOKEN[t] = true; Say("description", t) end
+        if t ~= "" and not st.spoken[t] then st.spoken[t] = true; Say(kind, t) end
     end
-end
-local function Consider(slot, kind, text)
-    if not text or text == "" then return end
-    local pend = PENDING[slot]
-    if pend and pend.text == text then pend.n = pend.n + 1 else PENDING[slot] = { text = text, n = 1 }; pend = PENDING[slot] end
-    if pend.n >= STABLE_POLLS and not SPOKEN[slot .. "|" .. text] then
-        SPOKEN[slot .. "|" .. text] = true
-        Say(kind, text)
-        return true
-    end
-    return false
 end
 local function Poll()
     local screen = nil
@@ -195,12 +183,12 @@ local function Poll()
         if Try(function() return w:IsVisible() end) then screen = w break end
     end
     if not screen then
-        if SCREEN_SEEN then Stop(); Out("event closed"); SCREEN_SEEN = nil; SPOKEN = {}; PENDING = {}; CHOICES_SEEN = nil; DESC_DONE = false; SENT_SPOKEN = {}; SENT_LAST = ""; SENT_STABLE = 0 end
+        if SCREEN_SEEN then Stop(); Out("event closed"); SCREEN_SEEN = nil; STREAMS = {} end
         return
     end
     local key = screen:GetAddress()
     if SCREEN_SEEN ~= key then
-        SCREEN_SEEN = key; SPOKEN = {}; PENDING = {}; CHOICES_SEEN = nil; DESC_DONE = false; SENT_SPOKEN = {}; SENT_LAST = ""; SENT_STABLE = 0
+        SCREEN_SEEN = key; STREAMS = {}
         Out("event opened: %s", ShortName(screen:GetFullName()))
     end
     -- the story text is narrated: the description, then the narrative part of each outcome line.
@@ -208,7 +196,8 @@ local function Poll()
     local descTexts = {}
     local d = Try(function() return screen.DescriptionText end)
     if d then Texts(d, descTexts) end
-    ConsiderSentences(table.concat(descTexts, " "))
+    local descMarkup = table.concat(descTexts, " ")
+    ConsiderStream("description", "description", CleanText(descMarkup), descMarkup)
     local oc = Try(function() return screen.OutcomeLinesContainer end)
     if oc then
         for i, line in ipairs(Children(oc)) do
@@ -235,9 +224,7 @@ local function Poll()
             for _, word in ipairs(RESULT_WORDS) do
                 text = text:gsub("^" .. word .. "[%s:!%.%-]+(%u)", "%1")
             end
-            if text ~= "" and not IsReward(text) then
-                if Consider("outcome" .. i, "outcome", text) then Out("outcome %d markup: %s", i, (markup:gsub("%s+", " "))) end
-            end
+            if text ~= "" and not IsReward(text) then ConsiderStream("outcome" .. i, "outcome", text, markup) end
         end
     end
 end
