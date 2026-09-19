@@ -248,6 +248,38 @@ function names on `UBrimstoneSettingsLocal`, per-preset values from a `FGameDiff
 "enemy hit points" row means native code that adds two UFunctions to that class and builds those objects
 after the registry initialises — not done; the value lives in the ini and on two hotkeys.
 
+## Narrator: voicing the world events
+
+World events are `UWorldEventResponseScreen` widgets (`WBP_WorldEventResponseScreen`): `TitleText`, a
+`DescriptionText` that the game types out letter by letter across several text blocks (visual lines), an
+`OutcomeLinesContainer` that gains one rich-text block per outcome (`<img id="WorldEventChoice"/>
+<Default.Gold>Search</> Among the items…`), and `ButtonsContainer` with the options. Native hooks on the
+screen's `Bind` / `AddOutcomeMessage` / `ShowResponses` never fire (called from C++), so the mod polls the
+visible screen every 250 ms on the game thread instead.
+
+The description is streamed as *sentences*: the text seen so far is split at `.!?` followed by a space and
+each complete sentence is spoken once it is there; the remainder is spoken once the text has been stable
+for four polls (the typewriter finished). Outcome blocks are stripped of the icon tag, the styled label of
+the chosen option, and any leading short label block; reward lines ("Each party member receives 125 XP",
+"… gold", "treasury") are dropped by pattern. Titles, options and tooltips are never spoken. Closing the
+screen writes a stop.
+
+Speech is done out of process: the mod appends one JSON line per utterance to
+`Narrator\queue.txt` next to the game exe and starts `Narrator\SolastaNarrator.exe` once (single-instance lock;
+it polls for the game process and exits when it is gone). The companion is a small Python program
+(`Narrator/companion/narrator.py`, packaged with PyInstaller): it synthesizes with `edge-tts`
+(Microsoft Edge's neural voices, free, online), caches MP3s by `sha1(voice + rate + pitch + text)` and plays
+them through `winmm` MCI in a queue that a stop empties. Queue commands: `voice` (switch at once),
+`mute` / `unmute`, `stop`; `sample` lines play even when muted (the voice introducing itself).
+`Ctrl+Shift+N` / `Ctrl+Shift+M` are key binds that only set flags, polled on the game thread; the choice is
+written to `narrator.ini`, which the companion also reads at start-up.
+
+Saved for a later version: all the event text is in the pak (`ST_MainCampaignIngredients.csv`, keys
+`DA_EV_*`; 131 events, 490 passages, ~88k characters, ≈100 minutes) and `Narrator/tools/extract_events.py`
+pulls it. Pre-rendering every passage once with a better engine (ElevenLabs, or a local model) would make
+narration instant and offline and allow a designed voice; the companion would check a pack folder keyed by
+the text before falling back to Edge. The extracted text and any audio pack stay out of the repository.
+
 ## Re-signing after a game patch
 
 1. Point the tools at the new build and confirm each signature still matches exactly once:
@@ -274,6 +306,7 @@ Python 3, no third-party dependencies except `capstone` for the disassembler.
 | `callers.py` | find direct call sites of a function |
 | `vtable.py` | read a vtable slot from the exe and map it back to a PDB symbol (resolves virtual calls in disassembly) |
 | `pak_index.py` / `pak_read.py` | parse and extract the unencrypted `Brimstone-Windows.pak` (set `OODLE_DLL` to any `oo2core_*_win64.dll`) |
+| `pakread.py` | the same as an importable class (`Pak(path).read(name)`, `OODLE_DIR`); used by `Narrator/tools/extract_events.py` |
 | `utoc_index.py` | parse the IoStore `.utoc` directory index to list cooked asset paths |
 | `minidump.py` | crash dump triage: exception, registers, module bases, return-address scan of the crashing thread |
 | `pdb_pubs_scan.py` / `pdb_addr.py` | build a lookup of every public symbol once, then name game-exe addresses (RVA) from a dump |

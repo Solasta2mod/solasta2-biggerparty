@@ -1,6 +1,7 @@
 """Stage the installer payload and generate payload.rc / payload_index.h.
 
-Payload kinds: 0 = UE4SS (stock experimental build), 1 = BiggerParty, 2 = GiveSpellbook, 3 = docs.
+Payload kinds: 0 = UE4SS (stock experimental build), 1 = BiggerParty, 2 = GiveSpellbook, 3 = docs, 4 = Narrator.
+The Narrator companion (Narrator/companion/dist/SolastaNarrator.exe) must be built first: see Narrator/companion/narrator.py.
 Run from anywhere; paths are resolved relative to this file.
 """
 import os, shutil, sys
@@ -43,6 +44,13 @@ for rel in ["Scripts/main.lua", "enabled.txt"]:
     os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((2, dst_rel))
 # 3: docs
 shutil.copy2(os.path.join(dist, "README.txt"), os.path.join(STAGE, "BiggerParty-README.txt")); entries.append((3, "BiggerParty-README.txt"))
+# 4: Narrator (mod + companion program)
+nr = os.path.join(WS, "Narrator")
+for src_rel, dst_rel in [("Scripts/main.lua", "ue4ss/Mods/Narrator/Scripts/main.lua"), ("enabled.txt", "ue4ss/Mods/Narrator/enabled.txt"),
+                         ("companion/dist/SolastaNarrator.exe", "Narrator/SolastaNarrator.exe")]:
+    src = os.path.join(nr, src_rel.replace("/", os.sep)); dst = os.path.join(STAGE, dst_rel.replace("/", os.sep))
+    if not os.path.exists(src): print("missing " + src + " (build the Narrator companion first)"); sys.exit(1)
+    os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((4, dst_rel))
 
 # zero-byte files (enabled.txt markers) cannot be embedded as resources: give them one byte
 for _, rel in entries:

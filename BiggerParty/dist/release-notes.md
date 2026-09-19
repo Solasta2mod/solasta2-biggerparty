@@ -1,5 +1,13 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.4** — new optional extra: the **Narrator**. The game's text-only world events are read aloud with a
+neural voice as the text appears, and the outcome after your choice too; titles, options, the choice and
+reward lines stay silent. Ctrl+Shift+N steps through fifteen English voices (each introduces itself; the
+choice is saved), Ctrl+Shift+M mutes. Uses Microsoft Edge's free online voices through a small helper
+program the mod starts with the game, so it needs internet; lines already heard are cached and replay
+offline. Pick "n" (or "a" with GiveSpellbook) in the installer; existing installs keep their extras on
+update. No change to BiggerParty itself.
+
 **1.3.1** — multiplayer fixes from the first three-player session. The party-following watchdog treated every
 follower as the host's and re-selected the host's hero every ten seconds (other players' followers follow
 their own leader; the mod now only looks at the heroes your player state controls, on the host). At a story

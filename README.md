@@ -8,8 +8,9 @@ six heroes and a hosted multiplayer lobby seat up to six players. Existing saves
 |---|---|---|
 | ![host screen with Maximum Players 6](docs/host-screen-6-players.jpg) | ![six-seat lobby](docs/lobby-6-seats.jpg) | ![six character slots in multiplayer party creation](docs/party-creation-6-slots-multiplayer.jpg) |
 
-Also included: **GiveSpellbook**, a small fix for the multiplayer bug where multiclassing into Wizard
-does not grant the spellbook.
+Also included, both optional: **GiveSpellbook**, a small fix for the multiplayer bug where multiclassing
+into Wizard does not grant the spellbook, and **Narrator**, which reads the game's text-only world events
+aloud with a neural voice (see below).
 
 > Early Access caveat: every game patch can change the code this mod patches. The mod checks the game
 > build at start-up and simply goes inert (with a note in `BiggerParty.log`) when it does not recognise
@@ -20,7 +21,8 @@ does not grant the spellbook.
 1. Download `BiggerParty-x.y.zip` from the [Releases](../../releases) page and unzip it.
 2. Close the game and run **`BiggerParty-Installer.exe`**. It finds Solasta II through Steam (or asks for
    the folder), installs the [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) script loader if you do not
-   have it, and installs the mod. Press **Enter** for the default install, **s** to also get GiveSpellbook.
+   have it, and installs the mod. Press **Enter** for the default install, **s** to also get GiveSpellbook,
+   **n** to also get the Narrator, **a** for both.
 3. Start the game normally. Everyone in a multiplayer session installs the same way.
 
 Uninstall: run the installer again and press **u**.
@@ -45,6 +47,28 @@ was only tested with 6; `EnemyHitPointsPercent=100`). Logs: `BiggerParty.log` (n
 GiveSpellbook (host / single player only): **Ctrl+Delete** grants a Wizard spellbook to any hero whose
 spellcasting reports it missing; **Ctrl+Backspace** reports; **Ctrl+Shift+Delete** forces one on everyone
 without a book.
+
+## Narrator (optional)
+
+World events — the text-only encounters on the road ("Voracious seagulls circle in the air…") — are not
+voiced by the game. With the Narrator installed, the story text is read aloud as it appears on screen, and
+the outcome after your choice is read too. Titles, the options, the choice you made and the reward lines
+are deliberately left silent. Dialogue scenes are not narrated (they have their own voice acting).
+
+| | |
+|---|---|
+| **Ctrl+Shift+N** | next voice — the new voice introduces itself so you can judge it; the choice is saved |
+| **Ctrl+Shift+M** | mute / unmute |
+
+The voices are Microsoft Edge's online neural voices (free, no account), so **the Narrator needs an
+internet connection**; audio is cached in `<game>\Brimstone\Binaries\Win64\Narrator\cache`, so a line you have heard
+plays instantly and offline. Fifteen English voices (British, Irish, Australian, American) are on the key;
+any other Edge voice can be set as `Voice=` in `Narrator\narrator.ini`, along with `Rate=`, `Volume=` and
+`Pitch=`. The narration is done by a small helper program, `Narrator\SolastaNarrator.exe`, that the mod
+starts with the game and that exits when the game does (it is a packaged Python program — some antivirus
+software is suspicious of those; it only reads the mod's queue file, talks to Edge's speech service and
+plays audio). The Narrator is independent of the party size and works in single player and multiplayer
+(each player hears their own narration).
 
 ## Enemy hit points
 
@@ -116,7 +140,8 @@ BiggerParty\installer\build.bat                        -> dist\BiggerParty-Insta
 ```
 
 `<UE4SS dir>` is an extracted UE4SS *experimental* release (UE 5.6 support), i.e. the folder that
-contains `dwmapi.dll` and `ue4ss\`.
+contains `dwmapi.dll` and `ue4ss\`. The Narrator's helper is built first with `Narrator\companion\build.bat`
+(a Python venv with `edge-tts` and `pyinstaller`; see the script).
 
 `tools\` holds the reverse-engineering helpers used to find the patch sites (PDB symbol/offset scanners,
 a capstone-based disassembler, pak/utoc readers). After a game update, `pdb_pub.py` + `disasm.py` are how

@@ -24,3 +24,9 @@ __pycache__/
 
 # private working notes, kept outside the repo
 docs-workspace-notes.md
+
+# game text pulled from the paks for the narration pack, and the rendered audio — never publish
+Narrator/text/
+Narrator/pack/
+Narrator/companion/dist/
+Narrator/companion/build/
