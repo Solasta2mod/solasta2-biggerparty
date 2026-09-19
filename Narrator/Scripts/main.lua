@@ -138,17 +138,39 @@ local STABLE_POLLS = 4          -- four polls at 250 ms: a second without change
 local SPOKEN, PENDING, SCREEN_SEEN, CHOICES_SEEN, DESC_DONE = {}, {}, nil, nil, false
 -- the description is typed out: speak each sentence as soon as it is complete, the tail when it stops
 local SENT_SPOKEN, SENT_LAST, SENT_STABLE = {}, "", 0
+-- Markup out (the description blocks are rich text: a credit line comes as a styled run), whitespace
+-- collapsed, and the author's credit that community events carry in front is not narrated
+local function CleanText(text)
+    text = text:gsub("<[^>/][^>]-/>", " "):gsub("<[^>]->", "")
+    text = text:gsub("%s+", " "):gsub("^%s+", "")
+    text = text:gsub("^%(Written by [^%)]*%)%s*", "")
+    return text
+end
+-- A sentence ends with punctuation, optional closing quotes or brackets, then a space. The curly quotes
+-- and the ellipsis are three bytes each: the search runs on a same-length ASCII shadow of the text so
+-- that the positions carry over to the original
+local RSQ, RDQ, ELL = string.char(226, 128, 153), string.char(226, 128, 157), string.char(226, 128, 166)
+local function SplitSentences(text)
+    local shadow = text:gsub(RSQ, "'''"):gsub(RDQ, '"""'):gsub(ELL, "...")
+    local pieces, pos = {}, 1
+    while true do
+        local _, e = shadow:find([=[[%.!?]+["'%)]*%s]=], pos)
+        if not e then break end
+        pieces[#pieces + 1] = text:sub(pos, e)
+        pos = e + 1
+    end
+    return pieces, text:sub(pos)                          -- complete sentences, and the tail still being typed
+end
 local function ConsiderSentences(text)
     if not text or text == "" then return end
-    text = text:gsub("^%s*%(Written by [^%)]*%)%s*", "")   -- community events carry the author's credit in front
+    local markup = text
+    text = CleanText(text)
+    if text == "" then return end
     if text == SENT_LAST then SENT_STABLE = SENT_STABLE + 1 else SENT_LAST = text; SENT_STABLE = 1 end
-    local pieces = {}
-    for sentence in text:gmatch("[^%.!?]+[%.!?]+%s") do pieces[#pieces + 1] = sentence end   -- complete sentences (followed by a space)
-    local consumed = 0
-    for _, sen in ipairs(pieces) do consumed = consumed + #sen end
-    local tail = text:sub(consumed + 1)
+    local pieces, tail = SplitSentences(text)
     if SENT_STABLE >= STABLE_POLLS then
-        pieces[#pieces + 1] = tail                     -- the typewriter is done: the rest is complete too
+        pieces[#pieces + 1] = tail                        -- the typewriter is done: the rest is complete too
+        if not DESC_DONE then Out("description markup: %s", (markup:sub(1, 160):gsub("%s+", " "))) end
         DESC_DONE = true
     end
     for _, sen in ipairs(pieces) do
