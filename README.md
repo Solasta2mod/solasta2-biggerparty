@@ -37,6 +37,7 @@ Uninstall: run the installer again and press **u**.
 | **Ctrl+Shift+End** | re-apply the UI tweaks on the current screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
 | **Ctrl+Shift+Up / Down** | enemy hit points +10% / −10% (see below) |
+| **Ctrl+Shift+F** | party heal: re-activates the formation manager, restarts follower AI, re-selects your hero |
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
 was only tested with 6; `EnemyHitPointsPercent=100`). Logs: `BiggerParty.log` (native patcher) and `ue4ss\UE4SS.log` (Lua).
@@ -73,6 +74,15 @@ percentage in an earlier session is left as it is. There is no row for it on the
   through a hero of theirs that the scene bound; a scene binds a fixed set of participants, so with six
   heroes a player whose heroes were all left out sees no choice and does not vote. If a player drops and
   rejoins, the game hands their heroes around; if a scene then fails to open for someone, save and reload.
+- **Followers stopping (game bug).** In the current Early Access build, party followers sometimes stop
+  walking after a series of leader changes. It happens with four heroes and with the mod's script idle,
+  so it is the game's; **save and reload** clears it. One cause the mod does fix: the game leaves its
+  party-formation manager switched off after some loads, and the mod switches it back on within seconds.
+  Ctrl+Shift+F applies the remaining known nudges by hand.
+- **Item transfers.** The item menu's "Transfer to …" entries beyond the third did nothing (the game's handler
+  was written for three receivers); the mod performs those transfers itself.
+- **NPC guests** who travel with the party (the game's own guest members) get no portrait on the
+  inventory strip and cannot receive items, as in the unmodded game.
 - **Players versus heroes.** `PartySize` is the number of heroes; `MaxPlayers` (in `BiggerParty.ini`) is
   the number of human players a hosted session accepts and defaults to `PartySize`. Set `MaxPlayers=4` to
   keep the vanilla four-seat lobby with a six-hero party.

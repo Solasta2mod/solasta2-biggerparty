@@ -23,6 +23,7 @@
 --   Ctrl+Shift+End         re-apply the UI tweaks on the current screen
 --   Ctrl+Shift+Backspace   status report to the UE4SS log (config, DLL log tail, party/slot counts, roles)
 --   Ctrl+Shift+Up / Down   enemy hit points +10% / -10% (written to the ini, applied to the monsters around)
+--   Ctrl+Shift+F           party heal: re-activate the formation manager, restart follower AI, re-select
 
 local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
@@ -575,9 +576,8 @@ local function BindExtraPortrait(widget, heroIndex)      -- heroIndex is 0-based
     -- first, so keep re-applying until the same texture has been seen a few times in a row.
     local key = widget:GetAddress()
     if PORTRAIT_BOUND[key] and (PORTRAIT_BOUND["stable" .. key] or 0) >= 3 then return true end
-    local party = nil
-    for _, pc in ipairs(Instances("PartyComponent")) do party = Try(function() return pc.Party end) if party then break end end
-    local hero = party and party[heroIndex + 1]
+    local party = HeroArray()
+    local hero = party[heroIndex + 1]
     if not (hero and hero:IsValid()) then return false end
     local guiClass = StaticFindObject("/Script/Brimstone.GuiRulesetActorComponent")
     local comp = Try(function() return hero:GetComponentByClass(guiClass) end)
@@ -706,20 +706,61 @@ local function PortraitScreens()
     return out
 end
 
-local function PartyArray()
-    for _, pc in ipairs(Instances("PartyComponent")) do
-        local party = Try(function() return pc.Party end)
-        if Count(party) > 0 then return party end
+local function PartyComponentOfMine()
+    local pc0 = UEHelpers.GetPlayerController()
+    local pawn = pc0 and pc0:IsValid() and Try(function() return pc0:K2_GetPawn() end)
+    local name = (pawn and pawn:IsValid()) and ShortName(pawn:GetFullName()):gsub("^Character_", "") or nil
+    local first = nil
+    for _, pcmp in ipairs(Instances("PartyComponent")) do
+        local party = Try(function() return pcmp.Party end)
+        local n = Count(party)
+        if n > 0 then
+            first = first or pcmp
+            if name then
+                for i = 1, n do
+                    local m = party[i]
+                    if m and m:IsValid() and ShortName(m:GetFullName()) == name then return pcmp end
+                end
+            end
+        end
     end
-    return nil
+    return first
+end
+local function PartyArray()
+    local pcmp = PartyComponentOfMine()
+    local party = pcmp and Try(function() return pcmp.Party end)
+    return (Count(party) > 0) and party or nil
+end
+-- the heroes of the party in party order (NPC guests travelling with the party are not heroes)
+local function HeroArray()
+    local pcmp = PartyComponentOfMine()
+    local party = pcmp and Try(function() return pcmp.Party end)
+    local out = {}
+    for i = 1, Count(party) do
+        local m = party[i]
+        if m and m:IsValid() then
+            local isHero = Try(function() return pcmp:IsHero(m) end)
+            if isHero == nil then isHero = not Try(function() return pcmp:IsGuest(m) end) end
+            if isHero ~= false then out[#out + 1] = m end
+        end
+    end
+    return out
+end
+local function PartyComponentsText()
+    local parts = {}
+    for _, pcmp in ipairs(Instances("PartyComponent")) do
+        local owner = Try(function() return pcmp:GetOwner() end)
+        parts[#parts + 1] = string.format("%s on %s: %d member(s)", ShortName(pcmp:GetFullName()), (owner and owner:IsValid()) and ShortName(owner:GetFullName()) or "?", Count(Try(function() return pcmp.Party end)))
+    end
+    return table.concat(parts, "; ")
 end
 
 -- party index (0-based) of a hero actor, or of the pawn (Character_<Hero>_<id>) that stands for it
 local function PartyIndexOf(actor)
-    local party = PartyArray()
+    local party = HeroArray()
     if not (party and actor and actor:IsValid()) then return nil end
     local name = ShortName(actor:GetFullName())
-    for i = 1, Count(party) do
+    for i = 1, #party do
         local m = party[i]
         if m and m:IsValid() then
             if m:GetAddress() == actor:GetAddress() then return i - 1 end
@@ -731,11 +772,17 @@ local function PartyIndexOf(actor)
 end
 
 local function PawnForHero(hero)
-    local prefix = "Character_" .. ShortName(hero:GetFullName()):gsub("_%d+$", "")
+    local base = ShortName(hero:GetFullName()):gsub("_%d+$", "")
+    local prefix = "Character_" .. base
     for _, cls in ipairs({ "BrimstoneCharacter", "Character" }) do
         for _, pawn in ipairs(Instances(cls)) do
-            if ShortName(pawn:GetFullName()):gsub("_%d+$", "") == prefix then return pawn end
+            local n = ShortName(pawn:GetFullName()):gsub("_%d+$", "")
+            if n == prefix then return pawn end
         end
+    end
+    -- NPC party members (guests) use their own name for the pawn
+    for _, pawn in ipairs(Instances("BrimstoneCharacter")) do
+        if ShortName(pawn:GetFullName()):gsub("_%d+$", "") == base then return pawn end
     end
     return nil
 end
@@ -788,13 +835,20 @@ local function MyHeroSet()      -- address set of the party's ruleset actors the
     end
     return set, n
 end
+local HOST_CACHE = { at = -100, value = false }
 local function IsHost()
+    if os.clock() - HOST_CACHE.at < 10 then return HOST_CACHE.value end
+    local v = nil
     for _, vm in ipairs(Instances("GameSessionViewModel")) do
         local h = Try(function() return vm.AmIHost end)
-        if h ~= nil then return h end
+        if h ~= nil then v = h break end
     end
-    local pc = UEHelpers.GetPlayerController()
-    return (pc and pc:IsValid() and Try(function() return pc:HasAuthority() end)) or false
+    if v == nil then
+        local pc = UEHelpers.GetPlayerController()
+        v = (pc and pc:IsValid() and Try(function() return pc:HasAuthority() end)) or false
+    end
+    HOST_CACHE = { at = os.clock(), value = v }
+    return v
 end
 local function OwnerNameOf(hero)  -- the player controlling a hero, for the report
     local ps = OwnerStateOf(hero)
@@ -854,7 +908,9 @@ local function ParamsOf(fn)
             local q = {}
             q.name = Try(function() return prop:GetFName():ToString() end) or "?"
             q.type = Try(function() return prop:GetClass():GetFName():ToString() end) or "?"
-            q.class = Try(function() return ShortName(prop:GetPropertyClass():GetFullName()) end)
+            if q.type:match("ObjectProperty$") or q.type:match("ClassProperty$") then
+                q.class = Try(function() return ShortName(prop:GetPropertyClass():GetFullName()) end)
+            end
             q.ret = (retFlag and Try(function() return prop:HasAnyPropertyFlags(retFlag) end)) or q.name == "ReturnValue"
             q.out = (outFlag and Try(function() return prop:HasAnyPropertyFlags(outFlag) end)) or false
             out[#out + 1] = q
@@ -901,8 +957,8 @@ local GAMEPLAY_BOUND = {}     -- extra widget address -> hero address bound thro
 local function BindGameplay(entry, w, orig)
     local key = w:GetAddress()
     local k = PORTRAIT_HERO[key]
-    local party = PartyArray()
-    local hero = party and k and party[k + 1]
+    local party = HeroArray()
+    local hero = k and party[k + 1]
     if not (hero and hero:IsValid()) then return end
     local current = Try(function() return w:GetBoundActor() end)
     if current and current.IsValid and current:IsValid() and current:GetAddress() == hero:GetAddress() then GAMEPLAY_BOUND[key] = hero:GetAddress() return end
@@ -914,9 +970,24 @@ end
 
 -- originals first (by name), then the extras we created (by hero index)
 local function OrderedPortraits(screen)
-    local originals, extras = {}, {}
+    local originals, extras, orphans = {}, {}, {}
     for _, w in ipairs(InspectionPortraitsIn(screen)) do
-        if PORTRAIT_HERO[w:GetAddress()] then extras[#extras + 1] = w else originals[#originals + 1] = w end
+        if PORTRAIT_HERO[w:GetAddress()] then extras[#extras + 1] = w
+        elseif ShortName(w:GetFullName()):match("_C_%d+$") then orphans[#orphans + 1] = w   -- ours, from before a script reload
+        else originals[#originals + 1] = w end
+    end
+    if #orphans > 0 then
+        -- newer objects carry lower numbers: creation order is descending by the suffix
+        table.sort(orphans, function(a, b)
+            return tonumber(ShortName(a:GetFullName()):match("(%d+)$")) > tonumber(ShortName(b:GetFullName()):match("(%d+)$"))
+        end)
+        for i, w in ipairs(orphans) do
+            local k = #originals + #extras + i - 1
+            PORTRAIT_HERO[w:GetAddress()] = k
+            PORTRAIT_REC[w:GetAddress()] = { w = w, name = w:GetFullName() }
+            extras[#extras + 1] = w
+        end
+        Out("inspect: recovered %d portrait(s) created before the script reload on %s", #orphans, ShortName(screen:GetFullName()))
     end
     table.sort(extras, function(a, b) return PORTRAIT_HERO[a:GetAddress()] < PORTRAIT_HERO[b:GetAddress()] end)
     return originals, extras
@@ -929,7 +1000,7 @@ end
 
 local function ExtendInspectionPortraits(verbose)
     if not Active() then return end
-    local nHeroes = Count(PartyArray())
+    local nHeroes = #HeroArray()
     if nHeroes <= 4 then return end
     for _, entry in ipairs(PortraitScreens()) do
         local originals, extras = OrderedPortraits(entry.screen)
@@ -1026,11 +1097,11 @@ local function ClickExtraPortraits()
         local _, extras = OrderedPortraits(entry.screen)
         if #extras > 0 then
             local curIdx = CurrentHeroIndex(entry)
-            local party = PartyArray()
+            local party = HeroArray()
             for _, w in ipairs(extras) do
                 local k = PORTRAIT_HERO[w:GetAddress()]
                 if k ~= curIdx and Try(function() return w:IsHovered() end) then
-                    local hero = party and party[k + 1]
+                    local hero = party[k + 1]
                     if hero and hero:IsValid() then
                         local ok, err = SelectHeroOn(entry, hero)
                         if not ok then Out("click: portrait %d select failed: %s", k + 1, tostring(err)) end
@@ -1209,6 +1280,11 @@ local function ReportFormation()
     local leader = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
     local lpos = leader and leader:IsValid() and Try(function() return leader:K2_GetActorLocation() end)
     local mgr = FormationManager()
+    Out("formation: %s", SplitTextRef and SplitTextRef() or "")
+    Out("formation: party components: %s", PartyComponentsText())
+    if DialogueStateTextRef then Out("formation: %s", DialogueStateTextRef()) end
+    Out("formation: manager tick=%s active=%s; %s", tostring(mgr and Try(function() return mgr:IsComponentTickEnabled() end)),
+        tostring(mgr and Try(function() return mgr:IsActive() end)), TickTextRef and TickTextRef() or "")
     Out("formation: manager=%s leader=%s designAnchors=%s providedDesignAnchors=%s radius=%s spread=%s",
         mgr and mgr:IsValid() and ShortName(mgr:GetFullName()) or "none",
         (leader and leader:IsValid()) and ShortName(leader:GetFullName()) or "none",
@@ -1241,10 +1317,81 @@ local function ReportFormation()
             local pos = pawn and Try(function() return pawn:K2_GetActorLocation() end)
             local anchorTo = ctrl and Try(function() return ctrl:GetAnchorToFollow() end)
             local leaderTo = ctrl and Try(function() return ctrl:GetLeaderToFollow() end)
-            Out("   hero %d %s pawn=%s controller=%s owner=%s mine=%s dist-to-leader=%.0f anchor=%s leader=%s", i, ShortName(hero:GetFullName()):gsub("_%d+$", ""),
+            local brain = ctrl and Try(function() return ctrl.BrainComponent end)
+            local brainText = (brain and brain.IsValid and brain:IsValid()) and string.format("brain running=%s paused=%s move=%s",
+                tostring(Try(function() return brain:IsRunning() end)), tostring(Try(function() return brain:IsPaused() end)),
+                tostring(Try(function() return ctrl:GetMoveStatus() end))) or "no brain"
+            if pawn then
+                -- gameplay tags on the hero's ability system: the game roots characters through tags
+                local tagText = "?"
+                pcall(function()
+                    local asc = hero.BrimstoneAbilitySystemComponent
+                    if asc and asc:IsValid() then
+                        local names = {}
+                        local okT = pcall(function()
+                            local container = {}
+                            asc:GetOwnedGameplayTags(container)
+                            local arr = container.GameplayTags
+                            for t = 1, Count(arr) do
+                                local nm = Try(function() return arr[t].TagName:ToString() end)
+                                if nm then names[#names + 1] = nm end
+                            end
+                        end)
+                        if not okT or #names == 0 then
+                            local rep2 = Try(function() return asc.ReplicatedLooseTags end)
+                            local arr = rep2 and Try(function() return rep2.GameplayTags end)
+                            for t = 1, Count(arr) do
+                                local nm = Try(function() return arr[t].TagName:ToString() end)
+                                if nm then names[#names + 1] = nm end
+                            end
+                        end
+                        local keep = {}
+                        for _, nm in ipairs(names) do
+                            if nm:match("[Mm]ove") or nm:match("[Dd]ialog") or nm:match("[Cc]inematic") or nm:match("[Ll]ock") or nm:match("[Bb]lock") or nm:match("[Rr]oot") or nm:match("[Ss]tun") or nm:match("[Ii]mmobil") or nm:match("[Cc]onversation") or nm:match("[Bb]usy") or nm:match("[Ww]ait") or nm:match("State") or nm:match("Condition") or nm:match("Paralys") or nm:match("Incapac") or nm:match("Restrain") or nm:match("Locomotion") or nm:match("Follow") then
+                                keep[#keep + 1] = nm
+                            end
+                        end
+                        tagText = string.format("%d tags; relevant: %s", #names, #keep > 0 and table.concat(keep, " ") or "none")
+                    end
+                end)
+                brainText = brainText .. " tags(" .. tagText .. ")"
+                local vel = Try(function() return pawn:GetVelocity() end)
+                local speed = vel and math.sqrt((vel.X or 0) ^ 2 + (vel.Y or 0) ^ 2 + (vel.Z or 0) ^ 2) or -1
+                local mv = Try(function() return pawn.CharacterMovement end)
+                local montage = Try(function() return pawn:GetCurrentMontage() end)
+                brainText = brainText .. string.format(" dilation=%s tick=%s vel=%.0f mode=%s walk=%s mvActive=%s mvTick=%s montage=%s", tostring(Try(function() return pawn.CustomTimeDilation end)),
+                    tostring(Try(function() return pawn:IsActorTickEnabled() end)), speed,
+                    tostring(mv and Try(function() return mv.MovementMode end)), tostring(mv and Try(function() return mv.MaxWalkSpeed end)),
+                    tostring(mv and Try(function() return mv:IsActive() end)), tostring(mv and Try(function() return mv:IsComponentTickEnabled() end)),
+                    (montage and montage.IsValid and montage:IsValid()) and ShortName(montage:GetFullName()) or "none")
+                local pf = ctrl and Try(function() return ctrl:GetPathFollowingComponent() end)
+                if not (pf and pf.IsValid and pf:IsValid()) then pf = ctrl and Try(function() return ctrl.PathFollowingComponent end) end
+                local pfOk = pf and pf.IsValid and pf:IsValid()
+                local pfMv = pfOk and Try(function() return pf.MovementComp end)
+                local pfMvOk = pfMv and pfMv.IsValid and pfMv:IsValid()
+                local pfOwner = pfMvOk and Try(function() return pfMv:GetOwner() end)
+                local pfText
+                if not pfOk then pfText = "no path follower"
+                elseif not pfMvOk then pfText = "path follower " .. ShortName(pf:GetFullName()) .. " has NO movement component"
+                elseif mv and mv:IsValid() and pfMv:GetAddress() == mv:GetAddress() then pfText = "same"
+                else pfText = "DIFFERENT: " .. ((pfOwner and pfOwner:IsValid()) and ShortName(pfOwner:GetFullName()) or "?") end
+                brainText = brainText .. " pfMove=" .. pfText
+                local dest = ctrl and Try(function() return ctrl:GetImmediateMoveDestination() end)
+                brainText = brainText .. string.format(" ignoreMove(ctrl=%s pawn=%s) dest=%s partial=%s",
+                    tostring(ctrl and Try(function() return ctrl:IsMoveInputIgnored() end)), tostring(Try(function() return pawn:IsMoveInputIgnored() end)),
+                    dest and string.format("%.0f away", Dist(dest, pos)) or "none", tostring(ctrl and Try(function() return ctrl:HasPartialPath() end)))
+                local mesh = Try(function() return pawn.Mesh end)
+                local anim = mesh and mesh:IsValid() and Try(function() return mesh:GetAnimInstance() end)
+                brainText = brainText .. string.format(" mesh(pauseAnims=%s noSkel=%s tick=%s vis=%s) anim=%s rootMotion=%s stuck=%s forceMove=%s",
+                    tostring(mesh and Try(function() return mesh.bPauseAnims end)), tostring(mesh and Try(function() return mesh.bNoSkeletonUpdate end)),
+                    tostring(mesh and Try(function() return mesh:IsComponentTickEnabled() end)), tostring(mesh and Try(function() return mesh:IsVisible() end)),
+                    (anim and anim.IsValid and anim:IsValid()) and ClassName(anim) or "none", tostring(anim and anim.IsValid and anim:IsValid() and Try(function() return anim.RootMotionMode end)),
+                    tostring(Try(function() return pawn.AnimNotifyStuck end)), tostring(Try(function() return pawn.AnimNotifyForceMoveExecution end)))
+            end
+            Out("   hero %d %s pawn=%s controller=%s owner=%s mine=%s dist-to-leader=%.0f anchor=%s leader=%s %s", i, ShortName(hero:GetFullName()):gsub("_%d+$", ""),
                 pawn and "ok" or "none", (ctrl and ctrl:IsValid()) and ClassName(ctrl) or "NONE", OwnerNameOf(hero), tostring(IsMine(hero)), Dist(pos, lpos),
                 (anchorTo and anchorTo.IsValid and anchorTo:IsValid()) and ShortName(anchorTo:GetFullName()) or "none",
-                (leaderTo and leaderTo.IsValid and leaderTo:IsValid()) and ShortName(leaderTo:GetFullName()) or "none")
+                (leaderTo and leaderTo.IsValid and leaderTo:IsValid()) and ShortName(leaderTo:GetFullName()) or "none", brainText)
         end
     end
 end
@@ -1254,7 +1401,8 @@ local LAST_HEAL = 0
 -- A raw possession leaves every follower AI with a stale party leader (it then follows anchors arranged around
 -- the wrong hero and wanders). Only the game's own selection path refreshes it, so heal by selecting another
 -- hero and re-selecting the current one - what pressing Tab twice does. Never during a dialogue.
-local function RepairFormation(verbose)
+ANCHOR_LAG_TICKS = 0
+local function RepairFormation(verbose, force)
     if not Active() then return 0 end
     local dialogueUp = false
     for _, scr in ipairs(Instances("DialogueScreen")) do if Try(function() return scr:IsVisible() end) then dialogueUp = true break end end
@@ -1291,25 +1439,191 @@ local function RepairFormation(verbose)
             if l and l.IsValid and l:IsValid() and l:GetAddress() ~= leader:GetAddress() then stale = l end
         end
     end
-    if not (stale and other) then return 0 end
+    -- the anchors the followers walk to are kept around the leader by the game's formation manager; when
+    -- they sit far behind a leader for three checks in a row, the manager has stalled (followers stand still)
+    local lagging = 0
+    local radius = Try(function() return FormationManager().PartyFormationRadius end) or 200
+    local lpos = Try(function() return leader:K2_GetActorLocation() end)
+    for _, a in ipairs(Instances("PartyFormationAnchor")) do
+        local f = Try(function() return a.FollowingActor end)
+        if f and f.IsValid and f:IsValid() and lpos then
+            local d = Dist(Try(function() return a:K2_GetActorLocation() end), lpos)
+            if d > radius * 2.5 then lagging = lagging + 1 end
+        end
+    end
+    ANCHOR_LAG_TICKS = lagging > 0 and ANCHOR_LAG_TICKS + 1 or 0
+    local why = nil
+    if stale then why = "followers thought " .. ShortName(stale:GetFullName()) .. " led"
+    elseif force then why = "forced" .. (lagging > 0 and (" (" .. lagging .. " anchor(s) far behind)") or "") end
+    -- lagging anchors alone never trigger the automatic heal: with a guest in the party the spare anchors
+    -- sit far away for good, and a re-selection every few seconds takes control away from the player
+    if not (why and other) then return 0 end
+    ANCHOR_LAG_TICKS = 0
+    -- not while a screen that follows the selection is open (inventory, chest, merchant): the switch can wait
+    for _, cls in ipairs({ "InspectionScreen", "ModalChestScreen", "MerchantScreen" }) do
+        for _, w in ipairs(Instances(cls)) do if Try(function() return w:IsVisible() end) then return 0 end end
+    end
     local now = os.clock()
-    if now - LAST_HEAL < 10 then return 0 end
+    if not force and now - LAST_HEAL < 10 then return 0 end
     LAST_HEAL = now
     local sel = LocalSelectionState()   -- defined with the portrait helpers, above this function
     if not (sel and sel:IsValid()) then return 0 end
+    -- two selection changes in one frame gave the HUD a half-updated party once (a crash in the game's
+    -- party-by-owner sort): select the other hero now, the leader again a moment later
+    Out("formation: %s; re-selecting %s, then %s again", why, ShortName(other:GetFullName()), ShortName(leader:GetFullName()))
     local ok1 = pcall(function() sel:SelectCharacter(other, pc, true, true) end)
-    local ok2 = pcall(function() sel:SelectCharacter(leader, pc, true, true) end)
-    Out("formation: followers thought %s led; re-selected %s to refresh the leader (%s/%s)", ShortName(stale:GetFullName()),
-        ShortName(leader:GetFullName()), ok1 and "ok" or "refused", ok2 and "ok" or "refused")
+    After(300, function()
+        if not (leader:IsValid() and pc:IsValid() and sel:IsValid()) then return end
+        local ok2 = pcall(function() sel:SelectCharacter(leader, pc, true, true) end)
+        Out("formation: leader refreshed (%s/%s)", ok1 and "ok" or "refused", ok2 and "ok" or "refused")
+    end)
     return 1
 end
 
 Every(2000, function() pcall(RepairFormation, false) end)
 
+local function TickText()
+    local parts = {}
+    for i, a in ipairs(Instances("PartyFormationAnchor")) do
+        parts[#parts + 1] = string.format("a%d tick=%s", i, tostring(Try(function() return a:IsActorTickEnabled() end)))
+    end
+    local owner = Try(function() return FormationManager():GetOwner() end)
+    if owner and owner:IsValid() then parts[#parts + 1] = "manager owner " .. ShortName(owner:GetFullName()) .. " tick=" .. tostring(Try(function() return owner:IsActorTickEnabled() end)) end
+    return table.concat(parts, " ")
+end
+TickTextRef = TickText
+local function SplitText()
+    for _, pcmp in ipairs(Instances("PartyComponent")) do
+        local groups = Try(function() return pcmp.PartySubgroups end)
+        local party = Try(function() return pcmp.Party end)
+        local split = {}
+        for i = 1, Count(party) do
+            local m = party[i]
+            if m and m:IsValid() and Try(function() return pcmp:IsActorSplitFromParty(m) end) then split[#split + 1] = ShortName(m:GetFullName()):match("^([^_]+)") end
+        end
+        local gtext = {}
+        for g = 1, Count(groups) do
+            local leader = Try(function() return groups[g].SubGroupLeader end)
+            local members = Try(function() return groups[g].SubgroupMembers end)
+            local mn = {}
+            for k = 1, Count(members) do local a = members[k]; mn[#mn + 1] = (a and a:IsValid()) and (ShortName(a:GetFullName()):match("^([^_]+)") or "?") or "none" end
+            gtext[#gtext + 1] = ((leader and leader.IsValid and leader:IsValid()) and (ShortName(leader:GetFullName()):match("^([^_]+)") or "?") or "none") .. ":{" .. table.concat(mn, ",") .. "}"
+        end
+        return string.format("subgroups=%d %s split=[%s]", Count(groups), table.concat(gtext, " "), table.concat(split, ", "))
+    end
+    return "no party component"
+end
+SplitTextRef = SplitText
 local function HealNow()
     LAST_HEAL = 0
-    local n = RepairFormation(true)
-    Out("formation: heal pass %s", n > 0 and "refreshed the leader" or "found nothing to fix")
+    local mgr = FormationManager()
+    if mgr then
+        if Try(function() return mgr:IsComponentTickEnabled() end) == false then
+            local ok = pcall(function() mgr:SetComponentTickEnabled(true) end)
+            Out("formation: manager tick was off; enabled: %s", tostring(ok))
+        end
+        if Try(function() return mgr:IsActive() end) == false then
+            local ok = pcall(function() mgr:SetActive(true, false) end)
+            Out("formation: manager was inactive; activated: %s", tostring(ok))
+        end
+        local owner = Try(function() return mgr:GetOwner() end)
+        if owner and owner:IsValid() and Try(function() return owner:IsActorTickEnabled() end) == false then
+            local ok = pcall(function() owner:SetActorTickEnabled(true) end)
+            Out("formation: manager owner tick was off; enabled: %s", tostring(ok))
+        end
+    end
+    for i, a in ipairs(Instances("PartyFormationAnchor")) do
+        if Try(function() return a:IsActorTickEnabled() end) == false then
+            local ok = pcall(function() a:SetActorTickEnabled(true) end)
+            Out("formation: anchor %d tick was off; enabled: %s", i, tostring(ok))
+        end
+    end
+    local fixedBrains = 0
+    local party = PartyArray()
+    for i = 1, Count(party) do
+        local hero = party[i]
+        local pawn = hero and hero:IsValid() and IsMine(hero) and PawnForHero(hero)
+        local ctrl = pawn and Try(function() return pawn:GetController() end)
+        local brain = ctrl and ctrl:IsValid() and ClassName(ctrl):match("AIController") and Try(function() return ctrl.BrainComponent end)
+        if brain and brain.IsValid and brain:IsValid() then
+            local running, paused = Try(function() return brain:IsRunning() end), Try(function() return brain:IsPaused() end)
+            if running == false or paused == true then
+                local ok, err = pcall(function() brain:RestartLogic() end)
+                fixedBrains = fixedBrains + 1
+                Out("formation: %s's AI logic was %s; restarted: %s", ShortName(hero:GetFullName()), running == false and "stopped" or "paused", ok and "ok" or tostring(err))
+            end
+        end
+    end
+    -- pawns frozen by a scene: time dilation left at 0, or actor tick off
+    local thawed = 0
+    for i = 1, Count(party) do
+        local hero = party[i]
+        local pawn = hero and hero:IsValid() and IsMine(hero) and PawnForHero(hero)
+        if pawn then
+            local dil = Try(function() return pawn.CustomTimeDilation end)
+            if dil ~= nil and dil < 0.99 then
+                local ok = pcall(function() pawn.CustomTimeDilation = 1.0 end)
+                thawed = thawed + 1
+                Out("formation: %s had time dilation %s; reset to 1: %s", ShortName(hero:GetFullName()), tostring(dil), tostring(ok))
+            end
+            if Try(function() return pawn:IsActorTickEnabled() end) == false then
+                local ok = pcall(function() pawn:SetActorTickEnabled(true) end)
+                thawed = thawed + 1
+                Out("formation: %s's actor tick was off; enabled: %s", ShortName(hero:GetFullName()), tostring(ok))
+            end
+            local ctrl = Try(function() return pawn:GetController() end)
+            -- the path follower steering a movement component that is not this pawn's: re-possess, as a reload does
+            local mvMine = Try(function() return pawn.CharacterMovement end)
+            local pfC = ctrl and ctrl:IsValid() and Try(function() return ctrl.PathFollowingComponent end)
+            local pfMvC = pfC and pfC.IsValid and pfC:IsValid() and Try(function() return pfC.MovementComp end)
+            if mvMine and mvMine:IsValid() and pfMvC and pfMvC.IsValid and pfMvC:IsValid() and pfMvC:GetAddress() ~= mvMine:GetAddress() and ClassName(ctrl):match("AIController") then
+                local ok1 = pcall(function() ctrl:UnPossess() end)
+                local ok2 = pcall(function() ctrl:Possess(pawn) end)
+                local pfMvAfter = Try(function() return ctrl.PathFollowingComponent.MovementComp end)
+                thawed = thawed + 1
+                Out("formation: %s's path follower steered another body; re-possessed (%s/%s), now %s", ShortName(hero:GetFullName()), tostring(ok1), tostring(ok2),
+                    (pfMvAfter and pfMvAfter.IsValid and pfMvAfter:IsValid() and pfMvAfter:GetAddress() == mvMine:GetAddress()) and "correct" or "still wrong")
+            end
+            if ctrl and ctrl:IsValid() and Try(function() return ctrl:IsMoveInputIgnored() end) == true then
+                local ok = pcall(function() ctrl:ResetIgnoreMoveInput() end)
+                thawed = thawed + 1
+                Out("formation: %s's controller was ignoring move input; reset: %s (now %s)", ShortName(hero:GetFullName()), tostring(ok), tostring(Try(function() return ctrl:IsMoveInputIgnored() end)))
+            end
+            local mesh = Try(function() return pawn.Mesh end)
+            if mesh and mesh:IsValid() then
+                if Try(function() return mesh.bPauseAnims end) == true then
+                    local ok = pcall(function() mesh.bPauseAnims = false end)
+                    thawed = thawed + 1
+                    Out("formation: %s's animations were paused; resumed: %s", ShortName(hero:GetFullName()), tostring(ok))
+                end
+                if Try(function() return mesh.bNoSkeletonUpdate end) == true then
+                    local ok = pcall(function() mesh.bNoSkeletonUpdate = false end)
+                    thawed = thawed + 1
+                    Out("formation: %s's skeleton updates were off; enabled: %s", ShortName(hero:GetFullName()), tostring(ok))
+                end
+                if Try(function() return mesh:IsComponentTickEnabled() end) == false then
+                    local ok = pcall(function() mesh:SetComponentTickEnabled(true) end)
+                    thawed = thawed + 1
+                    Out("formation: %s's mesh tick was off; enabled: %s", ShortName(hero:GetFullName()), tostring(ok))
+                end
+            end
+            local mv = Try(function() return pawn.CharacterMovement end)
+            if mv and mv:IsValid() then
+                if Try(function() return mv:IsActive() end) == false then
+                    local ok = pcall(function() mv:SetActive(true, false) end)
+                    thawed = thawed + 1
+                    Out("formation: %s's movement component was inactive; activated: %s", ShortName(hero:GetFullName()), tostring(ok))
+                end
+                if Try(function() return mv:IsComponentTickEnabled() end) == false then
+                    local ok = pcall(function() mv:SetComponentTickEnabled(true) end)
+                    thawed = thawed + 1
+                    Out("formation: %s's movement tick was off; enabled: %s", ShortName(hero:GetFullName()), tostring(ok))
+                end
+            end
+        end
+    end
+    local n = RepairFormation(true, true)
+    Out("formation: heal pass %s, %d AI brain(s) restarted, %d pawn(s) thawed; %s", n > 0 and "re-selected the leader" or "could not re-select (screen open, combat or dialogue?)", fixedBrains, thawed, SplitText())
     pcall(ReportFormation)
 end
 RegisterKeyBind(Key.F, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.heal = true end)
@@ -1495,7 +1809,11 @@ local function DumpObject(label, obj, stopAt)
                 pcall(function()
                     local name = Try(function() return prop:GetFName():ToString() end) or "?"
                     local ptype = Try(function() return prop:GetClass():GetFName():ToString() end) or "?"
-                    props[#props + 1] = string.format("%s:%s=%s", name, ptype, DescribeValue(Try(function() return obj[name] end)))
+                    if ptype:match("Delegate") or ptype:match("^Soft") or ptype:match("^Weak") or ptype:match("^Lazy") or ptype:match("Interface") or ptype:match("FieldPath") or ptype == "MapProperty" or ptype == "SetProperty" then
+                        props[#props + 1] = string.format("%s:%s (not read)", name, ptype)
+                    else
+                        props[#props + 1] = string.format("%s:%s=%s", name, ptype, DescribeValue(Try(function() return obj[name] end)))
+                    end
                 end)
             end)
         end)
@@ -1533,27 +1851,36 @@ local function DumpTree(label, root)
     end)
 end
 local function ReportPortraitBindings()
+    local found = false
     for _, entry in ipairs(PortraitScreens()) do
-        if entry.kind == "selection" then
-            local originals, extras = OrderedPortraits(entry.screen)
-            local orig, ours = originals[1], extras[1]
-            if orig then
-                DumpObject("original portrait", orig, "UserWidget")
-                DumpTree("original", orig)
-                local ext = Try(function() return orig.Extensions end)
-                for i = 1, Count(ext) do DumpObject("original extension " .. i, ext[i], "Object") end
+        found = true
+        local originals, extras = OrderedPortraits(entry.screen)
+        local orig, ours = originals[1], extras[1]
+        Out("bind: %s screen %s: %d original portrait(s), %d extra(s)", entry.kind, ShortName(entry.screen:GetFullName()), #originals, #extras)
+        if orig then
+            DumpObject("original portrait", orig, "UserWidget")
+            DumpTree("original", orig)
+            local ext = Try(function() return orig.Extensions end)
+            for i = 1, Count(ext) do DumpObject("original extension " .. i, ext[i], "Object") end
+        end
+        if ours then
+            DumpObject("extra portrait", ours, "UserWidget")
+            local ext = Try(function() return ours.Extensions end)
+            for i = 1, Count(ext) do DumpObject("extra extension " .. i, ext[i], "Object") end
+        end
+        DumpObject("screen", entry.screen, "UserWidget")
+    end
+    if not found then Out("bind: no inspection/chest/merchant screen open") end
+    -- item operation / transfer / context widgets that are up right now
+    for _, w in ipairs(UserWidgets()) do
+        local cn = ClassName(w)
+        if w:IsValid() and (cn:match("Transfer") or cn:match("ItemOperation") or cn:match("DropdownMenu")) then
+            if Try(function() return w:IsVisible() end) then
+                DumpObject("visible widget", w, "UserWidget")
+                DumpTree("widget", w)
             end
-            if ours then
-                DumpObject("extra portrait", ours, "UserWidget")
-                DumpTree("extra", ours)
-                local ext = Try(function() return ours.Extensions end)
-                for i = 1, Count(ext) do DumpObject("extra extension " .. i, ext[i], "Object") end
-            end
-            DumpObject("screen", entry.screen, "UserWidget")
-            return
         end
     end
-    Out("bind: no chest/merchant screen open (open a loot bag, then press Ctrl+Shift+Backspace)")
 end
 
 local function Report()
@@ -1722,31 +2049,236 @@ DialogueScreensText = function()
     return string.format("dialogue screens: %d (%d visible)", n, vis)
 end
 
--- Trace of the game's own screen push and option binding (a few lines per scene; kept for multiplayer reports)
-local function PawnText()
-    local p2 = UEHelpers.GetPlayerController()
-    local now = p2 and p2:IsValid() and Try(function() return p2:K2_GetPawn() end)
-    return (now and now:IsValid()) and ShortName(now:GetFullName()) or "none"
+-- Host side, for the other players: when a scene binds one of a remote player's AI followers while the
+-- hero that player has possessed is not in the scene, that player would get no dialogue and no vote. The
+-- server can possess the bound hero on their behalf (the possession replicates and the participant on
+-- their side readies itself), and gives them their previous hero back when the scene ends.
+local REMOTE_HANDBACK = {}     -- remote player state address -> { pc, pawn, name, tag, since }
+local DIALOGUE_MGR = nil
+local function DialogueManager()
+    if DIALOGUE_MGR and DIALOGUE_MGR:IsValid() then return DIALOGUE_MGR end
+    DIALOGUE_MGR = nil
+    for _, mgr in ipairs(Instances("DialogueManagerComponent")) do DIALOGUE_MGR = mgr break end
+    return DIALOGUE_MGR
 end
-for _, spec in ipairs({
-    { "/Script/Brimstone.BrimstoneDialogueParticipantComponent:BeforePushDialogueScreen", "before push" },
-    { "/Script/Brimstone.BrimstoneDialogueParticipantComponent:AfterPushDialogueScreen", "after push" },
-    { "/Script/Brimstone.DialogueScreen:StartDialogue", "screen StartDialogue" },
-    { "/Script/Brimstone.DialogueScreen:BindConversationOptions", "screen BindConversationOptions" },
-    { "/Script/Brimstone.DialogueScreen:UnbindConversationOptions", "screen UnbindConversationOptions" },
-}) do
-    local path, label = spec[1], spec[2]
-    local okH, errH = pcall(function()
-        RegisterHook(path, function(Context)
-            local self = Context:get()
-            local owner = Try(function() return self:GetOwner() end)
-            Out("trace: %s on %s (owner %s); possessed %s; %s", label, ShortName(self:GetFullName()),
-                (owner and owner:IsValid()) and ShortName(owner:GetFullName()) or "-", PawnText(), DialogueScreensText())
-        end)
-    end)
-    if not okH then Out("trace: no hook for %s: %s", path, tostring(errH)) end
+local function DialogueActive()
+    local mgr = DialogueManager()
+    local inst = mgr and Try(function() return mgr.CurrentDialogueInstance end)
+    return (inst and inst.IsValid and inst:IsValid()) and true or false
+end
+local function SelectionStateFor(pc)
+    local first = nil
+    for _, c in ipairs(Instances("BrimstoneSelectionStateComponent")) do
+        first = first or c
+        local owner = Try(function() return c:GetOwner() end)
+        if owner and owner:IsValid() and pc and owner:GetAddress() == pc:GetAddress() then return c end
+    end
+    return first
+end
+local function HandBackRemotePlayers(reason)
+    for key, rec in pairs(REMOTE_HANDBACK) do
+        REMOTE_HANDBACK[key] = nil
+        local pc, pawn = rec.pc, rec.pawn
+        if pc and pc:IsValid() and pawn and pawn:IsValid() then
+            local sel = SelectionStateFor(pc)
+            local ok = (sel and sel:IsValid() and pcall(function() sel:SelectCharacter(pawn, pc, true, true) end)) or false
+            local now = Try(function() return pc:K2_GetPawn() end)
+            local how = "selection"
+            if not (now and now:IsValid() and now:GetAddress() == pawn:GetAddress()) then
+                ok = pcall(function() pc:Possess(pawn) end); how = "possession"
+            end
+            Out("dialogue: gave %s back to %s after %s (%s, %s)", ShortName(pawn:GetFullName()), rec.name or "a player", reason, how, ok and "ok" or "refused")
+        else
+            Out("dialogue: could not give %s back to %s after %s: controller or pawn gone", rec.pawnName or "their hero", rec.name or "a player", reason)
+        end
+    end
+end
+HandBackRemotePlayersRef = HandBackRemotePlayers
+
+-- Once per dialogue instance, as soon as the manager's bindings are filled: log them, and for every remote
+-- player whose possessed hero is not in the scene but who has a hero in it, possess that hero for them.
+local HANDLED_INSTANCE = nil
+local function WatchDialogueBindings()
+    if not IsHost() then return end
+    local mgr = DialogueManager()
+    if not mgr then return end
+    local inst = Try(function() return mgr.CurrentDialogueInstance end)
+    if not (inst and inst.IsValid and inst:IsValid()) then HANDLED_INSTANCE = nil return end
+    local key = inst:GetAddress()
+    if HANDLED_INSTANCE == key then return end
+    local arr = Try(function() return mgr.CurrentDialogueBindings end)
+    local n = Count(arr)
+    if n <= 0 then return end                       -- not filled yet: next tick
+    HANDLED_INSTANCE = key
+    local tag = Try(function() return mgr.ActiveDialogueTag.TagName:ToString() end) or "?"
+    local byPlayer, parts = {}, {}
+    for i = 1, n do
+        local bnd = arr[i]
+        local actor = Try(function() return bnd.Actor end)
+        local ptag = Try(function() return bnd.ParticipantTag.TagName:ToString() end) or "?"
+        local valid = actor and actor.IsValid and actor:IsValid()
+        local name = valid and ShortName(actor:GetFullName()) or "none"
+        local who = ""
+        if valid and name:match("^Character_") then
+            local hero = HeroForPawn(actor)
+            local ps = hero and OwnerStateOf(hero)
+            if ps then
+                local k = ps:GetAddress()
+                byPlayer[k] = byPlayer[k] or { ps = ps, pawns = {} }
+                byPlayer[k].pawns[#byPlayer[k].pawns + 1] = actor
+                who = " [" .. OwnerNameOf(hero) .. (IsMine(hero) and ", mine" or "") .. "]"
+            end
+        end
+        parts[#parts + 1] = ptag:gsub("^Dialogue%.Participant%.", "") .. "=" .. name .. who
+    end
+    Out("bindings: %s: %s", tag, table.concat(parts, "; "))
+    local mine = LocalPlayerState()
+    for k, rec in pairs(byPlayer) do
+        if not (mine and k == mine:GetAddress()) and not REMOTE_HANDBACK[k] then
+            local rpc = Try(function() return rec.ps:GetPlayerController() end)
+            local theirs = rpc and rpc:IsValid() and Try(function() return rpc:K2_GetPawn() end)
+            if rpc and rpc:IsValid() and theirs and theirs:IsValid() then
+                local covered = false
+                for _, pw in ipairs(rec.pawns) do if pw:GetAddress() == theirs:GetAddress() then covered = true end end
+                if not covered then
+                    local target = rec.pawns[1]
+                    local pname = Str(Try(function() return rec.ps:GetPlayerName() end)) or "a player"
+                    REMOTE_HANDBACK[k] = { pc = rpc, pawn = theirs, pawnName = ShortName(theirs:GetFullName()), name = pname, tag = tag, since = os.clock() }
+                    local okP, errP = pcall(function() rpc:Possess(target) end)
+                    Out("dialogue: %s - %s's possessed %s is not in the scene; the server gives them %s: %s", tag, pname,
+                        ShortName(theirs:GetFullName()), ShortName(target:GetFullName()), okP and "ok" or tostring(errP))
+                end
+            end
+        end
+    end
 end
 
+-- Item transfers. The item menu lists "Transfer to <hero>" for every other party member, but its handler was
+-- written for three receivers (four heroes minus the carrier): entries four and five do nothing. When a
+-- transfer entry is clicked and no transfer follows, the mod does it through the item's own view model.
+local TRANSFER_SEEN = false
+local function HeroGivenName(hero) return (ShortName(hero:GetFullName()):match("^([^_]+)") or "") end
+local function LineText(line)
+    local text = nil
+    ForEachWidget(line, function(c)
+        if not text and ClassName(c):match("TextBlock") then
+            local t = Str(Try(function() return c:GetText() end))
+            if t and t ~= "" then text = t end
+        end
+    end)
+    return text
+end
+local function ValidVM(vm) return (vm and vm.IsValid and vm:IsValid()) and vm or nil end
+local function ItemViewModelOf(menu)
+    local anchor = Try(function() return menu.Anchor end)
+    local anchorText = (anchor and anchor.IsValid and anchor:IsValid()) and (ShortName(anchor:GetFullName()) .. " (" .. ClassName(anchor) .. ")") or "none"
+    -- the anchor, then up the widget tree; at the top of a tree, over to the user widget that owns it
+    local w = anchor
+    for _ = 1, 24 do
+        if not (w and w.IsValid and w:IsValid()) then break end
+        local vm = ValidVM(Try(function() return w.CachedItemViewModel end)) or ValidVM(Try(function() return w:GetItemViewModel() end))
+        if vm then return vm, anchorText end
+        local parent = Try(function() return w:GetParent() end)
+        if not (parent and parent:IsValid()) then
+            local tree = Try(function() return w:GetOuter() end)
+            local owner = tree and tree:IsValid() and Try(function() return tree:GetOuter() end)
+            if owner and owner:IsValid() and IsUserWidget(owner) and owner:GetAddress() ~= w:GetAddress() then parent = owner end
+        end
+        w = parent
+    end
+    -- the item the inventory has selected (a right-click selects the tile first)
+    for _, ivm in ipairs(Instances("CharacterInventoryViewModel")) do
+        local vm = ValidVM(Try(function() return ivm.SelectedItemViewModel end))
+        if vm then return vm, anchorText .. "; via the inventory's selected item" end
+    end
+    return nil, anchorText
+end
+local function CarrierOf(vm)
+    local c = Try(function() return vm.ContextualRulesetActor end)
+    if c and c.IsValid and c:IsValid() then return c end
+    for _, scr in ipairs(Instances("InspectionScreen")) do
+        if Try(function() return scr:IsVisible() end) then
+            local gui = Try(function() return scr:GetGuiRulesetActor() end)
+            local owner = gui and gui.IsValid and gui:IsValid() and Try(function() return gui:GetOwner() end)
+            if owner and owner:IsValid() then return owner end
+        end
+    end
+    return nil
+end
+local function TransferFallback(menu, text)
+    if not (text and Active()) then return end
+    local party = PartyArray()
+    if Count(party) <= 4 then return end
+    local vm, how = ItemViewModelOf(menu)
+    if not vm then Out("transfer: fallback: no item view model behind the menu (anchor %s)", tostring(how)) return end
+    local carrier = CarrierOf(vm)
+    if not carrier then Out("transfer: fallback: no carrier for %q", text) return end
+    local receiver = nil
+    for i = 1, Count(party) do
+        local m = party[i]
+        if m and m:IsValid() and m:GetAddress() ~= carrier:GetAddress() then
+            local given = HeroGivenName(m)
+            if given ~= "" and text:find(given, 1, true) then receiver = m break end
+        end
+    end
+    if not receiver then Out("transfer: fallback: no party member named in %q", text) return end
+    local ok, err = pcall(function() vm:TransferItem(carrier, receiver, -1, false) end)
+    Out("transfer: fallback %q: %s -> %s: %s", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()), ok and "requested" or tostring(err))
+end
+local LAST_MENU_CLICK, LAST_TRANSFER_AT = -10, -10
+TRANSFER_SERIAL = 0
+local function OnMenuLine(menu, line)
+    local text = line and line.IsValid and line:IsValid() and LineText(line)
+    if not (text and text:match("^%u%l+ %l+ ") and not text:match("…")) then return end   -- "Transfer to X" (not the quantity entry)
+    -- one click raises the line's event twice, and the game's own transfer (entries one to three) can run
+    -- before or after this hook: decide once per click, by whether a transfer happened around the click
+    local now = os.clock()
+    if now - LAST_MENU_CLICK < 0.5 then return end
+    LAST_MENU_CLICK = now
+    if now - LAST_TRANSFER_AT < 0.5 then return end
+    local serial = TRANSFER_SERIAL
+    After(200, function()
+        local later = os.clock()
+        if TRANSFER_SERIAL ~= serial or LAST_TRANSFER_AT >= now - 0.5 then return end
+        pcall(TransferFallback, menu, text)
+    end)
+end
+-- The menu's Blueprint class is only loaded when a menu first opens: hook it then (retried from the timer).
+local MENU_CLASS = "/Game/UI/Common/Dropdown/WBP_DropdownMenu.WBP_DropdownMenu_C"
+local MENU_HOOKED = false
+local MENU_TRIES = 0
+HookItemMenu = function()
+    if MENU_HOOKED then return true end
+    if not (StaticFindObject(MENU_CLASS) and StaticFindObject(MENU_CLASS):IsValid()) then
+        if LoadAsset then pcall(LoadAsset, MENU_CLASS) end
+        if not (StaticFindObject(MENU_CLASS) and StaticFindObject(MENU_CLASS):IsValid()) then return false end
+    end
+    local all = true
+    for _, fn in ipairs({ "OnMouseButtonDownUpward_Event", "OnButtonReleased_Event" }) do
+        local okH, errH = pcall(function()
+            RegisterHook(MENU_CLASS .. ":" .. fn, function(Context, PLine)
+                local menu = Context:get()
+                local line = Try(function() return PLine:get() end)
+                pcall(OnMenuLine, menu, line)
+            end)
+        end)
+        if not okH then all = false; MENU_TRIES = MENU_TRIES + 1; if MENU_TRIES <= 2 then Out("transfer: item menu hook %s not registered yet: %s", fn, tostring(errH)) end end
+    end
+    MENU_HOOKED = all
+    if all then Out("transfer: item menu hooked (entries beyond the third now transfer)") end
+    return all
+end
+HookItemMenu()
+
+-- Item transfers: what the UI asks for (view model) and what reaches the server (RPC)
+local function ActorText(a)
+    return (a and a.IsValid and a:IsValid()) and ShortName(a:GetFullName()) or tostring(a)
+end
+pcall(function()
+    RegisterHook("/Script/Brimstone.ItemViewModel:TransferItem", function(Context, PCarrier, PReceiver, PQuantity, PDrag)
+        TRANSFER_SEEN = true; LAST_TRANSFER_AT = os.clock(); TRANSFER_SERIAL = TRANSFER_SERIAL + 1
+    end)
+end)
 local SWAP_DONE = {}
 local function PossessEarly(self, tag)
     if not Active() then return end
@@ -1765,6 +2297,7 @@ local function PossessEarly(self, tag)
     -- the dialogue screen is pushed for the possessed pawn: each player possesses its own first participant
     if not IsMine(hero) then
         local c = Try(function() return owner:GetController() end)
+        pcall(WatchDialogueBindings)      -- the bindings may be complete by now
         Out("dialogue: %s - participant %s (%s) belongs to another player; leaving it to them", tag, ShortName(owner:GetFullName()),
             (c and c:IsValid()) and ClassName(c) or "no controller")
         return
@@ -1783,23 +2316,17 @@ local function PossessEarly(self, tag)
     local after = Try(function() return pc:K2_GetPawn() end)
     Out("dialogue: %s - possessing own first bound hero %s before the scene binds: %s (pawn now %s)", tag, ShortName(owner:GetFullName()),
         ok and "ok" or tostring(err), (after and after:IsValid()) and ShortName(after:GetFullName()) or "none")
-    for _, ms in ipairs({ 500, 2500 }) do
-        After(ms, function()
-            local p2 = UEHelpers.GetPlayerController()
-            local now = p2 and p2:IsValid() and Try(function() return p2:K2_GetPawn() end)
-            Out("dialogue: %s - %d ms later: possessed %s; %s", tag, ms, (now and now:IsValid()) and ShortName(now:GetFullName()) or "none", DialogueScreensText())
-        end)
-    end
 end
 
 local function OnConversationExit()
-    if not (PARTY_SWAP or PRE_DIALOGUE_PAWN) then return end
+    if not (PARTY_SWAP or PRE_DIALOGUE_PAWN or (REMOTE_HANDBACK and next(REMOTE_HANDBACK))) then return end
     EXIT_TOKEN = EXIT_TOKEN + 1
     local token = EXIT_TOKEN
     After(1500, function()
         if token == EXIT_TOKEN then
             pcall(RestorePartyOrder)
             if PRE_DIALOGUE_PAWN and ResyncSelectionRef then pcall(ResyncSelectionRef) end
+            if HandBackRemotePlayersRef then pcall(HandBackRemotePlayersRef, "the conversation exit") end
         end
     end)
 end
@@ -1835,7 +2362,7 @@ PRE_DIALOGUE_SINCE = 0
 for _, mod in ipairs({ "/Script/Brimstone.", "/Script/DialogueSystem.", "/Script/BrimstoneDialogue.", "/Script/TacticalCore." }) do
     local okE = pcall(function()
         RegisterHook(mod .. "DialogueManagerComponent:OnDialogueInstanceEnded", function(Context)
-            After(500, function() pcall(RestorePartyOrder); pcall(ResyncSelection) end)
+            After(500, function() pcall(RestorePartyOrder); pcall(ResyncSelection); pcall(HandBackRemotePlayers, "the scene ended") end)
         end)
     end)
     if okE then break end
@@ -1882,10 +2409,147 @@ local function Reapply()
     Out("re-applied layout/camera/host-screen tweaks")
 end
 
+-- Ownership watch: the game's grouped party getter assumes every party member has a controlling player
+-- state (it reads a field of it without a null check); log when a member loses or regains one, and log
+-- possession changes, so a crash there has context in the log.
+local OWNER_SEEN, POSSESSED_SEEN = {}, nil
+local CONTROLLED_SEEN = nil
+local function ControlledText()
+    local parts = {}
+    for _, ps in ipairs(Instances("BrimstonePlayerState")) do
+        local arr = Try(function() return ps.ControlledActors end)
+        local names = {}
+        for i = 1, Count(arr) do
+            local a = arr[i]
+            names[#names + 1] = (a and a:IsValid()) and (ShortName(a:GetFullName()):match("^([^_]+)") or "?") or "invalid"
+        end
+        parts[#parts + 1] = string.format("%s[gate=%s ready=%s]={%s}", ShortName(ps:GetFullName()):gsub("^BP_BrimstonePlayerState_C_", "PS_"),
+            tostring(Try(function() return ps.bHasCompletedHotJoinGate end)), tostring(Try(function() return ps.bReadyForHotJoin end)), table.concat(names, ","))
+    end
+    return table.concat(parts, " ")
+end
+
+local MEMBERS_SEEN = nil
+local ORPHAN_SINCE = {}
+-- The formation manager (the component that moves the anchors the followers walk to) is sometimes left
+-- deactivated by the game; followers then stand still. Log the transition with what is on screen, and on
+-- the host turn it back on once nothing that legitimately pauses it (a dialogue, combat) is up.
+local MANAGER_ACTIVE_SEEN, MANAGER_OFF_SINCE = nil, nil
+local function ScreensUpText()
+    local names = {}
+    for _, w in ipairs(Instances("CommonActivatableWidget")) do
+        if Try(function() return w:IsVisible() end) then
+            local n = ShortName(w:GetFullName()):gsub("_C_%d+$", ""):gsub("_C$", "")
+            if not (n:match("HudScreen") or n:match("GameLayout") or n:match("Notification") or n:match("Tooltip")) then names[#names + 1] = n end
+        end
+    end
+    return #names > 0 and table.concat(names, ", ") or "nothing"
+end
+DialogueStateTextRef = function()
+    local mgr = DialogueManager()
+    local inst = mgr and Try(function() return mgr.CurrentDialogueInstance end)
+    local nb = mgr and Count(Try(function() return mgr.CurrentDialogueBindings end)) or -1
+    local tag = mgr and Try(function() return mgr.ActiveDialogueTag.TagName:ToString() end)
+    local queued = mgr and Count(Try(function() return mgr.QueuedDialogues end)) or -1
+    local convs = 0
+    for _, c in ipairs(Instances("ConversationParticipantComponent")) do if Try(function() return c:IsInActiveConversation() end) then convs = convs + 1 end end
+    return string.format("dialogue: instance=%s bindings=%d tag=%s queued=%d participants in conversation=%d; screens up: %s",
+        (inst and inst.IsValid and inst:IsValid()) and ShortName(inst:GetFullName()) or "none", nb, tostring(tag), queued, convs, ScreensUpText())
+end
+local function WatchFormationManager()
+    local mgr = FormationManager()
+    if not mgr then return end
+    local active = Try(function() return mgr:IsActive() end)
+    if active == nil then return end
+    if MANAGER_ACTIVE_SEEN ~= nil and MANAGER_ACTIVE_SEEN ~= active then
+        Out("formation: manager %s (screens up: %s)", active and "reactivated" or "DEACTIVATED", ScreensUpText())
+    end
+    MANAGER_ACTIVE_SEEN = active
+    if active then MANAGER_OFF_SINCE = nil return end
+    MANAGER_OFF_SINCE = MANAGER_OFF_SINCE or os.clock()
+    if not IsHost() or os.clock() - MANAGER_OFF_SINCE < 2 then return end
+    for _, scr in ipairs(Instances("DialogueScreen")) do if Try(function() return scr:IsVisible() end) then return end end
+    for _, cls in ipairs({ "BattleInitiativePanel", "TurnControlPanel" }) do
+        for _, w in ipairs(Instances(cls)) do if Try(function() return w:IsVisible() end) then return end end
+    end
+    local ok = pcall(function() mgr:SetActive(true, false) end)
+    Out("formation: manager was inactive for %.0f s with no dialogue or combat up; reactivated (%s)", os.clock() - MANAGER_OFF_SINCE, tostring(ok))
+    MANAGER_OFF_SINCE = os.clock()
+end
+
+local function WatchOwnership()
+    local party = PartyArray()
+    local names = {}
+    for i = 1, Count(party) do
+        local m = party[i]
+        if m and m:IsValid() then
+            local ps = OwnerStateOf(m)
+            local key = m:GetAddress()
+            local now = ps and ShortName(ps:GetFullName()) or "NONE"
+            local name = ShortName(m:GetFullName())
+            names[#names + 1] = name .. (ps and "" or " (no owner)")
+            if OWNER_SEEN[key] == nil then
+                if not ps then Out("owner: party member %s (%s) has no controlling player state", name, ClassName(m)) end
+            elseif OWNER_SEEN[key] ~= now then
+                Out("owner: %s: controlling player state %s -> %s", name, OWNER_SEEN[key], now)
+            end
+            OWNER_SEEN[key] = now
+            -- host: a member nobody controls (a guest joining a full-slot party) crashes the party-by-owner
+            -- sort the HUD runs; give it to the local player after two samples without an owner
+            if not ps and IsHost() then
+                ORPHAN_SINCE[key] = ORPHAN_SINCE[key] or os.clock()
+                if os.clock() - ORPHAN_SINCE[key] > 5 then
+                    local mine = LocalPlayerState()
+                    local arr = mine and Try(function() return mine.ControlledActors end)
+                    if arr then
+                        local okA, errA = pcall(function() arr[#arr + 1] = m end)
+                        local after = OwnerStateOf(m)
+                        Out("owner: %s handed to the local player (%s; owner now %s)", name, okA and "ok" or tostring(errA), after and ShortName(after:GetFullName()) or "still none")
+                        if after then ORPHAN_SINCE[key] = nil else ORPHAN_SINCE[key] = os.clock() + 30 end   -- retry in half a minute if it did not take
+                    end
+                end
+            else
+                ORPHAN_SINCE[key] = nil
+            end
+        end
+    end
+    local list = table.concat(names, ", ")
+    if MEMBERS_SEEN ~= nil and MEMBERS_SEEN ~= list then Out("owner: party is now: %s", list) end
+    MEMBERS_SEEN = list
+end
+
+Every(2000, function() if not MENU_HOOKED then pcall(HookItemMenu) end end)
+
+Every(250, function()
+    if not CFG.Enabled then return end
+    local ok, err = pcall(WatchDialogueBindings)
+    if not ok then HpError("dialogue watch", err) end
+    ok, err = pcall(WatchOwnership)
+    if not ok then HpError("ownership watch", err) end
+    ok, err = pcall(WatchFormationManager)
+    if not ok then HpError("formation manager watch", err) end
+end)
+
 Every(3000, function()
     if not CFG.Enabled then return end
     local ok, err = pcall(ScaleEnemyHitPoints, false)
     if not ok then HpError("sweep", err) end
+    -- a remote player's hero handed over for a scene: give it back once no dialogue is running
+    if next(REMOTE_HANDBACK) then
+        local mgr = DialogueManager()
+        local nb = mgr and Count(Try(function() return mgr.CurrentDialogueBindings end)) or -1
+        local active = DialogueActive()
+        local oldest = math.huge
+        for _, rec in pairs(REMOTE_HANDBACK) do oldest = math.min(oldest, rec.since or 0) end
+        local age = os.clock() - oldest
+        if age > 5 and (not active or nb == 0) then
+            pcall(HandBackRemotePlayers, "no scene is running")
+        elseif age > 5 and (HP_ERR_LOGGED.handback_wait or 0) < 6 then
+            HP_ERR_LOGGED.handback_wait = (HP_ERR_LOGGED.handback_wait or 0) + 1
+            Out("dialogue: hand-back pending for %.0f s: instance active=%s bindings=%d tag=%s", age, tostring(active), nb,
+                tostring(mgr and Try(function() return mgr.ActiveDialogueTag.TagName:ToString() end)))
+        end
+    end
 end)
 
 RegisterKeyBind(Key.UP_ARROW, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.hpUp = true end)

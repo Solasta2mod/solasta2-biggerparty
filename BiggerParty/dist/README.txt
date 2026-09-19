@@ -21,6 +21,7 @@ IN GAME
   Ctrl+Shift+End        re-apply the card layout / camera on the creation screen
   Ctrl+Shift+Backspace  status report into <game>\Brimstone\Binaries\Win64\ue4ss\UE4SS.log
   Ctrl+Shift+Up / Down  enemy hit points +10% / -10% (hostile monsters; host applies it; 100 = vanilla)
+  Ctrl+Shift+F          party heal (followers standing still); if they stay put, save and reload (game bug)
 
 CONFIG   <game>\Brimstone\Binaries\Win64\BiggerParty.ini   (Enabled=1, PartySize=6, EnemyHitPointsPercent=100)
 LOGS     <game>\Brimstone\Binaries\Win64\BiggerParty.log   (patcher)  and  ue4ss\UE4SS.log (Lua)

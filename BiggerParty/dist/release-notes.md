@@ -5,7 +5,11 @@ follower as the host's and re-selected the host's hero every ten seconds (other 
 their own leader; the mod now only looks at the heroes your player state controls, on the host). At a story
 scene each player now only possesses a hero of their own; the host used to grab other players' followers.
 The party strip no longer un-hides plates the game hid, which duplicated a portrait after a player rejoined.
-Everyone in a session should update.
+Also: "Transfer to …" now works for every hero (the game's item menu only handled three receivers); the
+inventory strip lists heroes only, so an NPC guest no longer adds spare portraits (which could crash when
+clicked); the game's party-formation manager is switched back on when a load leaves it off (followers stood
+still); Ctrl+Shift+F is a manual party heal. Known game bug: followers can stop after many leader changes
+even in an unmodded four-hero party; save and reload clears it. Everyone in a session should update.
 
 **1.3** — enemy hit points. `EnemyHitPointsPercent` in `BiggerParty.ini` (default 100) scales hostile monsters'
 maximum hit points; Ctrl+Shift+Up / Down change it in game by 10. The host applies it to every hostile monster

@@ -87,6 +87,20 @@ The first real three-player session (two heroes each) showed where single-player
   `DialogueScreen` start/bind functions show the game's own screen push relative to the mod's possession.
   Do not trace `OnPossessedPawnChanged`: every participant component in the level receives it.
 
+## Followers that stop walking (not fixed)
+
+Reproduced with four heroes and with the mod's script disabled from a clean load, so it is the game's:
+after a run of leader changes, some followers stand still although every state the mod can read matches a
+healthy follower (brain running, path status "moving" with a valid destination, movement component active,
+animation running, no time dilation, move input not ignored). Resetting the AI controller, the movement
+component or the formation anchors does nothing; a save and reload always fixes it, and a manual leader
+change often does. Two real faults were found on the way and are fixed: the formation manager component is
+sometimes left inactive after a load (`UPartyFormationManagerComponent:IsActive()`; the mod re-activates it),
+and a watchdog of the mod's own that re-selected the leader on a timer took control away from the player
+(never re-select on a timer). `Ctrl+Shift+F` bundles the harmless nudges. Whatever a reload resets lives in
+the character itself and was not reachable through reflection; the next step, if ever, is the binary: what
+the game's own selection path does that a plain possess does not.
+
 ## Threads: everything on the game thread
 
 UE4SS runs `LoopAsync` and `ExecuteWithDelay` callbacks on its own async thread, and key-bind callbacks on
