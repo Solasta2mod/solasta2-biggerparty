@@ -62,6 +62,11 @@ local function Stop()
 end
 
 -- reward lines are not narrated: experience, items, gold and the like
+-- roll results the game prints in front of an outcome (never narrated); longest first so "Critical Success"
+-- is taken whole
+local RESULT_WORDS = { "Ability Check Success", "Ability Check Failure", "Group Check Success", "Group Check Failure",
+    "Critical Success", "Critical Failure", "Auto Success", "Success", "Failure", "Failed", "Fail" }
+local RAW_LOGGED = {}
 local function IsReward(text)
     local t = text:lower()
     if t:match("^each party member") or t:match("^the party ") or t:match("^your party ") then return true end
@@ -171,7 +176,7 @@ local function Poll()
     end
     local key = screen:GetAddress()
     if SCREEN_SEEN ~= key then
-        SCREEN_SEEN = key; SPOKEN = {}; PENDING = {}; CHOICES_SEEN = nil; DESC_DONE = false; SENT_SPOKEN = {}; SENT_LAST = ""; SENT_STABLE = 0
+        SCREEN_SEEN = key; SPOKEN = {}; PENDING = {}; CHOICES_SEEN = nil; DESC_DONE = false; SENT_SPOKEN = {}; SENT_LAST = ""; SENT_STABLE = 0; RAW_LOGGED = {}
         Out("event opened: %s", ShortName(screen:GetFullName()))
     end
     -- the story text is narrated: the description, then the narrative part of each outcome line.
@@ -192,15 +197,24 @@ local function Poll()
                 if words <= 5 and not first:match("[%.!?]") then table.remove(t, 1) end
             end
             local raw = table.concat(t, " ")
+            local markup = raw
             raw = raw:gsub("<[^>/][^>]-/>", " ")                   -- icons (<img .../>) out first; not the </> that closes a run
-            -- then the leading styled runs: the chosen option's label, and the check's result ("Success")
-            local n = 1
-            while n > 0 do raw, n = raw:gsub("^%s*<[^>]->[^<]*</>%s*", "") end
+            -- then the leading styled runs: the chosen option's label, and the roll's result ("Success").
+            -- Only short runs: a sentence wrapped in a style is narration
+            while true do
+                local run = raw:match("^%s*<[^>]->([^<]*)</>")
+                if not run or select(2, run:gsub("%S+", "")) > 4 then break end
+                raw = raw:gsub("^%s*<[^>]->[^<]*</>%s*", "", 1)
+            end
             local text = raw:gsub("<[^>]->", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-            -- a result word left in plain text in front of the sentence
-            text = text:gsub("^Critical Success[%s:!%.]+(%u)", "%1"):gsub("^Critical Failure[%s:!%.]+(%u)", "%1")
-            text = text:gsub("^Success[%s:!%.]+(%u)", "%1"):gsub("^Failure[%s:!%.]+(%u)", "%1")
-            if text ~= "" and not IsReward(text) then Consider("outcome" .. i, "outcome", text) end
+            -- a roll result left in plain text in front of the sentence ("Success This bridge...")
+            for _, word in ipairs(RESULT_WORDS) do
+                text = text:gsub("^" .. word .. "[%s:!%.%-]+(%u)", "%1")
+            end
+            if text ~= "" and not IsReward(text) then
+                if not RAW_LOGGED[i] then RAW_LOGGED[i] = true; Out("outcome %d markup: %s", i, (markup:gsub("%s+", " "))) end
+                Consider("outcome" .. i, "outcome", text)
+            end
         end
     end
 end
