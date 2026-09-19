@@ -66,7 +66,6 @@ end
 -- is taken whole
 local RESULT_WORDS = { "Ability Check Success", "Ability Check Failure", "Group Check Success", "Group Check Failure",
     "Critical Success", "Critical Failure", "Auto Success", "Success", "Failure", "Failed", "Fail" }
-local RAW_LOGGED = {}
 local function IsReward(text)
     local t = text:lower()
     if t:match("^each party member") or t:match("^the party ") or t:match("^your party ") then return true end
@@ -141,6 +140,7 @@ local SPOKEN, PENDING, SCREEN_SEEN, CHOICES_SEEN, DESC_DONE = {}, {}, nil, nil, 
 local SENT_SPOKEN, SENT_LAST, SENT_STABLE = {}, "", 0
 local function ConsiderSentences(text)
     if not text or text == "" then return end
+    text = text:gsub("^%s*%(Written by [^%)]*%)%s*", "")   -- community events carry the author's credit in front
     if text == SENT_LAST then SENT_STABLE = SENT_STABLE + 1 else SENT_LAST = text; SENT_STABLE = 1 end
     local pieces = {}
     for sentence in text:gmatch("[^%.!?]+[%.!?]+%s") do pieces[#pieces + 1] = sentence end   -- complete sentences (followed by a space)
@@ -163,7 +163,9 @@ local function Consider(slot, kind, text)
     if pend.n >= STABLE_POLLS and not SPOKEN[slot .. "|" .. text] then
         SPOKEN[slot .. "|" .. text] = true
         Say(kind, text)
+        return true
     end
+    return false
 end
 local function Poll()
     local screen = nil
@@ -176,7 +178,7 @@ local function Poll()
     end
     local key = screen:GetAddress()
     if SCREEN_SEEN ~= key then
-        SCREEN_SEEN = key; SPOKEN = {}; PENDING = {}; CHOICES_SEEN = nil; DESC_DONE = false; SENT_SPOKEN = {}; SENT_LAST = ""; SENT_STABLE = 0; RAW_LOGGED = {}
+        SCREEN_SEEN = key; SPOKEN = {}; PENDING = {}; CHOICES_SEEN = nil; DESC_DONE = false; SENT_SPOKEN = {}; SENT_LAST = ""; SENT_STABLE = 0
         Out("event opened: %s", ShortName(screen:GetFullName()))
     end
     -- the story text is narrated: the description, then the narrative part of each outcome line.
@@ -199,11 +201,11 @@ local function Poll()
             local raw = table.concat(t, " ")
             local markup = raw
             raw = raw:gsub("<[^>/][^>]-/>", " ")                   -- icons (<img .../>) out first; not the </> that closes a run
-            -- then the leading styled runs: the chosen option's label, and the roll's result ("Success").
-            -- Only short runs: a sentence wrapped in a style is narration
+            -- then the leading styled runs: the chosen option's label ("We'll join you in song!:") and the
+            -- roll's result ("Success"). Labels are short or end with a colon; a long styled sentence is narration
             while true do
                 local run = raw:match("^%s*<[^>]->([^<]*)</>")
-                if not run or select(2, run:gsub("%S+", "")) > 4 then break end
+                if not run or (select(2, run:gsub("%S+", "")) > 12 and not run:match(":%s*$")) then break end
                 raw = raw:gsub("^%s*<[^>]->[^<]*</>%s*", "", 1)
             end
             local text = raw:gsub("<[^>]->", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
@@ -212,8 +214,7 @@ local function Poll()
                 text = text:gsub("^" .. word .. "[%s:!%.%-]+(%u)", "%1")
             end
             if text ~= "" and not IsReward(text) then
-                if not RAW_LOGGED[i] then RAW_LOGGED[i] = true; Out("outcome %d markup: %s", i, (markup:gsub("%s+", " "))) end
-                Consider("outcome" .. i, "outcome", text)
+                if Consider("outcome" .. i, "outcome", text) then Out("outcome %d markup: %s", i, (markup:gsub("%s+", " "))) end
             end
         end
     end

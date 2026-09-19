@@ -78,7 +78,9 @@ class Player:
 async def synthesize(text, cfg, path):
     import edge_tts
     tts = edge_tts.Communicate(text, cfg["Voice"], rate=cfg["Rate"], volume=cfg["Volume"], pitch=cfg["Pitch"])
-    await tts.save(path)
+    tmp = path + ".part"
+    await tts.save(tmp)
+    os.replace(tmp, path)          # never leave a half-written file where the player could pick it up
 
 def running_pids(exe_name):
     """PIDs of processes with this image name, through the toolhelp snapshot (no console needed)."""
@@ -104,18 +106,41 @@ def running_pids(exe_name):
         k32.CloseHandle(snap)
     return pids
 
+def process_name(pid):
+    """Image name of a live process, or None."""
+    k32 = ctypes.windll.kernel32
+    TH32CS_SNAPPROCESS = 0x2
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", ctypes.c_ulong), ("cntUsage", ctypes.c_ulong), ("th32ProcessID", ctypes.c_ulong),
+                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", ctypes.c_ulong), ("cntThreads", ctypes.c_ulong),
+                    ("th32ParentProcessID", ctypes.c_ulong), ("pcPriClassBase", ctypes.c_long), ("dwFlags", ctypes.c_ulong),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+    snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == ctypes.c_void_p(-1).value or snap == -1:
+        return None
+    try:
+        entry = PROCESSENTRY32W(); entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32ProcessID == pid:
+                return entry.szExeFile
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return None
+
 def game_running():
     pids = running_pids(GAME_EXE)
     return True if pids is None else len(pids) > 0
 
 def main():
     os.makedirs(CACHE, exist_ok=True)
-    # one instance at a time
+    # one instance at a time: the lock names the running companion's pid (any file name, so an older
+    # build left running still counts)
     try:
-        mine = running_pids(os.path.basename(sys.argv[0])) or []
         if os.path.exists(LOCK):
             pid = int(open(LOCK).read().strip() or 0)
-            if pid and pid != os.getpid() and pid in mine:
+            if pid and pid != os.getpid() and "narrator" in (process_name(pid) or "").lower():
                 return
         open(LOCK, "w").write(str(os.getpid()))
     except Exception:
