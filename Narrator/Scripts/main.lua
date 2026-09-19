@@ -152,12 +152,14 @@ end
 local RSQ, RDQ, ELL = string.char(226, 128, 153), string.char(226, 128, 157), string.char(226, 128, 166)
 local function SplitSentences(text)
     local shadow = text:gsub(RSQ, "'''"):gsub(RDQ, '"""'):gsub(ELL, "...")
-    local pieces, pos = {}, 1
+    local pieces, pos, from = {}, 1, 1
     while true do
-        local _, e = shadow:find([=[[%.!?]+["'%)]*%s]=], pos)
+        local _, e = shadow:find([=[[%.!?]+["'%)]*%s]=], from)
         if not e then break end
-        pieces[#pieces + 1] = text:sub(pos, e)
-        pos = e + 1
+        -- a sentence never starts with a lower-case letter: '"Come!" he cries.' stays whole
+        local nxt = shadow:sub(e + 1, e + 1)
+        if nxt ~= "" and nxt:match("%l") then from = e + 1
+        else pieces[#pieces + 1] = text:sub(pos, e); pos = e + 1; from = pos end
     end
     return pieces, text:sub(pos)                          -- complete sentences, and the tail still being typed
 end
@@ -236,10 +238,10 @@ end
 
 -- Voice choice and mute, from the keyboard. The choice is written to narrator.ini (next to the companion) and
 -- pushed to the running companion, which introduces the new voice in its own words.
-local VOICES = {
+local VOICES = {                -- the first is the default
+    { "en-IE-EmilyNeural", "Emily, Irish English" }, { "en-IE-ConnorNeural", "Connor, Irish English" },
     { "en-GB-RyanNeural", "Ryan, British English" }, { "en-GB-ThomasNeural", "Thomas, British English" },
     { "en-GB-SoniaNeural", "Sonia, British English" }, { "en-GB-LibbyNeural", "Libby, British English" },
-    { "en-IE-ConnorNeural", "Connor, Irish English" }, { "en-IE-EmilyNeural", "Emily, Irish English" },
     { "en-AU-WilliamNeural", "William, Australian English" }, { "en-AU-NatashaNeural", "Natasha, Australian English" },
     { "en-US-AndrewNeural", "Andrew, American English" }, { "en-US-BrianNeural", "Brian, American English" },
     { "en-US-ChristopherNeural", "Christopher, American English" }, { "en-US-GuyNeural", "Guy, American English" },

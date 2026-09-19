@@ -6,7 +6,7 @@ offline. Playback uses the Windows multimedia API; nothing else is installed.
 
 Files (next to SolastaNarrator.exe, in <game>\\Brimstone\\Binaries\\Win64\\Narrator\\):
   queue.txt      written by the mod: one JSON object per line ({"kind": "...", "text": "..."} or {"kind": "stop"})
-  narrator.ini   Voice=en-GB-RyanNeural  Rate=+0%  Volume=+0%  Enabled=1  (Ctrl+Shift+N / Ctrl+Shift+M in the game, or edit and restart)
+  narrator.ini   Voice=en-IE-EmilyNeural  Rate=+0%  Volume=+0%  Enabled=1  (Ctrl+Shift+N / Ctrl+Shift+M in the game, or edit and restart)
   narrator.log   what was spoken, and any errors
 """
 import asyncio, ctypes, hashlib, json, os, subprocess, sys, threading, time, queue
@@ -27,7 +27,7 @@ def log(msg):
         pass
 
 def read_ini():
-    cfg = {"Voice": "en-GB-RyanNeural", "Rate": "+0%", "Volume": "+0%", "Pitch": "+0Hz", "Enabled": "1"}
+    cfg = {"Voice": "en-IE-EmilyNeural", "Rate": "+0%", "Volume": "+0%", "Pitch": "+0Hz", "Enabled": "1"}
     try:
         with open(INI, encoding="utf-8") as f:
             for line in f:
@@ -37,8 +37,8 @@ def read_ini():
                     cfg[k.strip()] = v.strip()
     except OSError:
         with open(INI, "w", encoding="utf-8") as f:
-            f.write("[Narrator]\n; Edge neural voice (en-GB-RyanNeural, en-GB-ThomasNeural, en-GB-SoniaNeural, en-US-AndrewNeural, en-US-AvaNeural, ...)\n"
-                    "Voice=en-GB-RyanNeural\n; speaking rate and volume, e.g. -10% or +20%\nRate=+0%\nVolume=+0%\nPitch=+0Hz\n; 0 = muted (Ctrl+Shift+M in the game toggles it)\nEnabled=1\n")
+            f.write("[Narrator]\n; Edge neural voice (en-IE-EmilyNeural, en-IE-ConnorNeural, en-GB-RyanNeural, en-GB-SoniaNeural, en-US-AndrewNeural, en-US-AvaNeural, ...)\n"
+                    "Voice=en-IE-EmilyNeural\n; speaking rate and volume, e.g. -10% or +20%\nRate=+0%\nVolume=+0%\nPitch=+0Hz\n; 0 = muted (Ctrl+Shift+M in the game toggles it)\nEnabled=1\n")
     return cfg
 
 winmm = ctypes.windll.winmm

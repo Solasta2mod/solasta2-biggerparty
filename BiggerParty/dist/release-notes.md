@@ -2,7 +2,7 @@ For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 
 
 **1.4** — new optional extra: the **Narrator**. The game's text-only world events are read aloud with a
 neural voice as the text appears, and the outcome after your choice too; titles, options, the choice and
-reward lines stay silent. Ctrl+Shift+N steps through fifteen English voices (each introduces itself; the
+reward lines stay silent. Ctrl+Shift+N steps through fifteen English voices (Emily, Irish, by default; each introduces itself; the
 choice is saved), Ctrl+Shift+M mutes. Uses Microsoft Edge's free online voices through a small helper
 program the mod starts with the game, so it needs internet; lines already heard are cached and replay
 offline. Pick "n" (or "a" with GiveSpellbook) in the installer; existing installs keep their extras on

@@ -62,7 +62,7 @@ are deliberately left silent. Dialogue scenes are not narrated (they have their 
 
 The voices are Microsoft Edge's online neural voices (free, no account), so **the Narrator needs an
 internet connection**; audio is cached in `<game>\Brimstone\Binaries\Win64\Narrator\cache`, so a line you have heard
-plays instantly and offline. Fifteen English voices (British, Irish, Australian, American) are on the key;
+plays instantly and offline. Fifteen English voices (Irish, British, Australian, American; Emily, Irish, is the default) are on the key;
 any other Edge voice can be set as `Voice=` in `Narrator\narrator.ini`, along with `Rate=`, `Volume=` and
 `Pitch=`. The narration is done by a small helper program, `Narrator\SolastaNarrator.exe`, that the mod
 starts with the game and that exits when the game does (it is a packaged Python program — some antivirus
