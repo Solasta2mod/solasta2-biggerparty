@@ -28,7 +28,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.4.7 (game builds CL-112340 / CL-112436)";
+static const wchar_t* kVersion = L"BiggerParty 1.4.8 (game builds CL-112340 / CL-112436)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
@@ -388,6 +388,7 @@ static int Uninstall(const std::wstring& root)
     }
     DeleteFileW(Join(win64, L"BiggerParty.ini").c_str());
     DeleteFileW(Join(win64, L"BiggerParty.log").c_str());
+    DeleteFileW(Join(win64, L"BiggerParty-history.log").c_str());
     DeleteFileW(Join(win64, L"BiggerParty-README.txt").c_str());
     DeleteTree(Join(modsDir, L"BiggerParty"));
     DeleteTree(Join(modsDir, L"PartyProbe"));

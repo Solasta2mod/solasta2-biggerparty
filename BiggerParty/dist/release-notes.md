@@ -1,5 +1,10 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.4.8** — `BiggerParty-history.log` next to the ini keeps the diagnostic lines (loads, "after load", party
+ownership, transfers, XP, errors) across launches, because UE4SS wipes its own log at every start and a
+player who restarts after a hang or crash had nothing left to send. Trimmed automatically. Nothing else
+changes; install it on every machine so the next stuck load can be read.
+
 **1.4.7** — the combat XP top-up (verified in play: a 325 XP fight split seven ways became 81 per hero, as
 with four) no longer attempts a grant on an NPC guest; the game's criterion, a hero progress component, is
 used. Host-side only. Battles are logged by actor name.

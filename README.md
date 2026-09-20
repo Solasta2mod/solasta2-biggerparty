@@ -42,7 +42,8 @@ Uninstall: run the installer again and press **u**.
 | **Ctrl+Shift+F** | party heal: re-activates the formation manager, restarts follower AI, re-selects your hero |
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
-was only tested with 6; `EnemyHitPointsPercent=100`; `CombatExperienceAsIfFour=1`). Logs: `BiggerParty.log` (native patcher) and `ue4ss\UE4SS.log` (Lua).
+was only tested with 6; `EnemyHitPointsPercent=100`; `CombatExperienceAsIfFour=1`). Logs: `BiggerParty.log` (native patcher), `ue4ss\UE4SS.log` (Lua; wiped at every launch) and
+`BiggerParty-history.log` (the key lines, kept across launches — the one to send after a hang or crash).
 
 GiveSpellbook (host / single player only): **Ctrl+Delete** grants a Wizard spellbook to any hero whose
 spellcasting reports it missing; **Ctrl+Backspace** reports; **Ctrl+Shift+Delete** forces one on everyone

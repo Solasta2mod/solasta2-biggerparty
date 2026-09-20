@@ -30,6 +30,30 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
+-- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
+-- own log at every launch, so a hang or crash a player restarts from leaves nothing behind otherwise)
+local HISTORY_PATH = nil
+local function Keep(fmt, ...)
+    local line = string.format(fmt, ...)
+    Out("%s", line)
+    if HISTORY_PATH == nil then
+        local ini = FindIniPathRef and FindIniPathRef()      -- set below, once the ini lookup exists
+        HISTORY_PATH = ini and ini:gsub("[^/\\]*$", "") .. "BiggerParty-history.log" or false
+        if HISTORY_PATH then                              -- keep it small: the last 300 KB once it passes a megabyte
+            local f = io.open(HISTORY_PATH, "rb")
+            if f then
+                local size = f:seek("end")
+                if size and size > 1000000 then
+                    f:seek("set", size - 300000); local tail = f:read("a"); f:close()
+                    local w = io.open(HISTORY_PATH, "wb"); if w then w:write(tail); w:close() end
+                else f:close() end
+            end
+        end
+    end
+    if not HISTORY_PATH then return end
+    local f = io.open(HISTORY_PATH, "a")
+    if f then f:write(os.date("[%Y-%m-%d %H:%M:%S] "), line, "\n"); f:close() end
+end
 local function Try(fn, ...) local ok, v = pcall(fn, ...); if ok then return v end; return nil end
 local function Count(arr) if arr == nil then return -1 end; local ok, n = pcall(function() return #arr end); return ok and n or -1 end
 local function ShortName(full) return full:match("([^%.:]+)$") or full end
@@ -115,6 +139,7 @@ local function FindIniPath()
     end
     return nil
 end
+FindIniPathRef = FindIniPath
 
 local CFG = { Enabled = true, PartySize = 6, MaxPlayers = 0, CameraFovMultiplier = nil, EnemyHitPointsPercent = 100, CombatExperienceAsIfFour = true }   -- MaxPlayers 0 = follow PartySize
 
@@ -1700,7 +1725,7 @@ end
 -- ruleset actors built from a monster definition, with their attitude towards the party (2 = hostile)
 local HP_ERR_LOGGED = {}
 local function HpError(where, err)
-    if not HP_ERR_LOGGED[where] then HP_ERR_LOGGED[where] = true; Out("enemy hp: error in %s: %s", where, tostring(err)) end
+    if not HP_ERR_LOGGED[where] then HP_ERR_LOGGED[where] = true; Keep("enemy hp: error in %s: %s", where, tostring(err)) end
 end
 local function Monsters()
     local out = {}
@@ -2241,7 +2266,7 @@ local function TopUpBattle(rec, why)
             else Out("combat xp: could not grant %d to %s: %s", extra, ShortName(h:GetFullName()), tostring(err)) end
         end
     end
-    Out("combat xp: battle %s %s: pool %.0f split %d ways by the game (%d each); +%d to %d hero(es) for a four-hero share of %d: %s",
+    Keep("combat xp: battle %s %s: pool %.0f split %d ways by the game (%d each); +%d to %d hero(es) for a four-hero share of %d: %s",
         rec.id, why, rec.pool, rec.n, math.floor(rec.pool / rec.n), extra, given, math.floor(rec.pool / 4), table.concat(names, ", "))
 end
 local function WatchBattles()
@@ -2495,7 +2520,7 @@ local function TransferFallback(menu, text)
     end
     if not receiver then Out("transfer: fallback: no party member named in %q", text) return end
     local ok, err = pcall(function() vm:TransferItem(carrier, receiver, -1, false) end)
-    Out("transfer: fallback %q: %s -> %s: %s; item %s (%s)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()),
+    Keep("transfer: fallback %q: %s -> %s: %s; item %s (%s)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()),
         ok and "requested" or tostring(err), ItemText(vm), tostring(how))
 end
 local LAST_MENU_CLICK, LAST_TRANSFER_AT = -10, -10
@@ -2735,7 +2760,7 @@ local function PostLoadReport()
             up[#up + 1] = n:gsub("_C$", "")
         end
     end
-    Out("after load: pawn=%s view=%s my heroes=%s (%d) loading widgets up=%s screens up: %s%s", (pawn and pawn:IsValid()) and ShortName(pawn:GetFullName()) or "NONE",
+    Keep("after load: pawn=%s view=%s my heroes=%s (%d) loading widgets up=%s screens up: %s%s", (pawn and pawn:IsValid()) and ShortName(pawn:GetFullName()) or "NONE",
         (view and view:IsValid()) and ShortName(view:GetFullName()) or "NONE", #mine > 0 and table.concat(mine, ",") or "none", #mine,
         #up > 0 and table.concat(up, ",") or "none", ScreensUpText(), IsHost() and " (host)" or "")
 end
@@ -2808,7 +2833,7 @@ local function WatchOwnership()
         end
     end
     local list = table.concat(names, ", ")
-    if MEMBERS_SEEN ~= nil and MEMBERS_SEEN ~= list then Out("owner: party is now: %s", list) end
+    if MEMBERS_SEEN ~= nil and MEMBERS_SEEN ~= list then Keep("owner: party is now: %s", list) end
     if MEMBERS_SEEN == "" and list ~= "" then After(10000, function() pcall(PostLoadReport) end) end   -- a level just came up
     MEMBERS_SEEN = list
 end
@@ -2869,5 +2894,5 @@ Every(50, function()
     if PRESSED.report then PRESSED.report = false; NewScan(); local ok, err = pcall(Report); if not ok then Out("report failed: %s", tostring(err)) end end
 end)
 
-Out("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift+End re-apply, Ctrl+Shift+Backspace status",
+Keep("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift+End re-apply, Ctrl+Shift+Backspace status",
     tostring(CFG.Enabled), CFG.PartySize, iniPath or "ini not found: using defaults")

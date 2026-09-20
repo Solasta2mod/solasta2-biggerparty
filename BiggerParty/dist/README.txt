@@ -1,4 +1,4 @@
-BiggerParty 1.4.7 for Solasta II (Early Access builds CL-112340 / CL-112436)
+BiggerParty 1.4.8 for Solasta II (Early Access builds CL-112340 / CL-112436)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.
@@ -36,7 +36,9 @@ NARRATOR (if installed)
 CONFIG   <game>\Brimstone\Binaries\Win64\BiggerParty.ini   (Enabled=1, PartySize=6, EnemyHitPointsPercent=100,
          CombatExperienceAsIfFour=1: the game splits a fight's XP by head count, so six heroes would level
          at two-thirds the pace; the host tops each hero up to a four-hero share. 0 keeps the game's split.)
-LOGS     <game>\Brimstone\Binaries\Win64\BiggerParty.log   (patcher)  and  ue4ss\UE4SS.log (Lua)
+LOGS     <game>\Brimstone\Binaries\Win64\BiggerParty.log   (patcher)  and  ue4ss\UE4SS.log (Lua; wiped at
+         every launch)  and  BiggerParty-history.log (the key lines, kept across launches: send this one
+         when something went wrong before a restart)
 
 UNINSTALL  run the installer again and choose "u" (removes the mod; asks about GiveSpellbook / Narrator / UE4SS).
 
