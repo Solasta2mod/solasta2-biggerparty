@@ -1,9 +1,14 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
-**1.4.5** — "Transfer to …" beyond the third entry moved the worn robe instead of the scale mail that was
-right-clicked. The tile you right-click keeps a *comparison* view model of the worn item while an
-equippable item is hovered, and the fallback transferred through that. It now sends the tile's own item
-through the game's server command directly, and logs the item it moved.
+**1.4.6** — "Transfer to …" beyond the third entry moved the worn robe instead of the scale mail that was
+right-clicked. The tile you right-click keeps only a scratch view model, re-bound to the *worn* item for
+the comparison tooltip while an equippable item is hovered, and the fallback transferred through that.
+The tile's real item is now found by other means (the tile blueprint's own view model, the list entry, or
+the carried item whose icon the tile shows), and when none is certain the transfer is refused and logged
+rather than moving the wrong thing.
+
+**1.4.5** — first attempt at the same bug (the tile's native item slot, which the inventory grid does not
+use); superseded.
 
 **1.4.4** — the fallback took the inventory's *selected* item (the last tile left-clicked) as a last resort;
 it now reads the right-clicked tile and logs which item it moved and how it found it.

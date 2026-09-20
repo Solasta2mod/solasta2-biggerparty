@@ -2395,37 +2395,87 @@ local function CarrierOf(vm)
     end
     return nil
 end
--- The tile that opened the menu carries the item it shows (UItemTile.Item, a ruleset actor). Its cached
--- view model is not to be trusted: while an equippable item is hovered the tile builds a view model of
--- the worn item for the comparison tooltip, and a transfer through that one moves the worn item (a robe
--- went instead of the scale mail). The item goes straight through the game's server command, as the
--- view model's own TransferItem does.
-local function TileItemOf(menu)
-    local anchor = Try(function() return menu.Anchor end)
-    if not (anchor and anchor.IsValid and anchor:IsValid()) then return nil end
-    local item = Try(function() return anchor.Item end)
-    if item and item.IsValid and item:IsValid() then return item, anchor end
-    return nil
-end
-local function ServerTransfer(carrier, receiver, item)
-    local pc = UEHelpers.GetPlayerController()
-    local cls = StaticFindObject("/Script/Brimstone.CommandsControllerComponent")
-    local cmd = pc and pc:IsValid() and cls and cls:IsValid() and Try(function() return pc:GetComponentByClass(cls) end)
-    if not (cmd and cmd:IsValid()) then return false, "no commands controller component" end
-    local ok, err = pcall(function() cmd:Server_TransferItem(carrier, receiver, item, -1) end)
-    return ok, err
+-- The tile that opened the menu (WBP_GridItemTile) does not keep its own view model anywhere native:
+-- UItemTile.CachedItemViewModel is a scratch view model that BuildItemViewModelFromRulesetActorForComparison
+-- re-binds to the WORN item for the comparison tooltip whenever an equippable item is hovered, and a
+-- transfer through it moves the worn item (a Sorcerer Outfit went instead of the scale mail, twice). The
+-- tile's real item is found elsewhere: a view model the tile blueprint holds under its own name, the UMG
+-- list entry object, or the carried item whose icon the tile shows. When none is certain, nothing moves.
+local function RealItemVMOfTile(tile, carrier)
+    local cached = Try(function() return tile.CachedItemViewModel end)
+    local cachedAddr = (cached and cached.IsValid and cached:IsValid()) and cached:GetAddress() or nil
+    local found, via = nil, nil
+    local cls = Try(function() return tile:GetClass() end)
+    local depth = 0
+    while cls and cls:IsValid() and depth < 6 and not found do
+        pcall(function()
+            cls:ForEachProperty(function(prop)
+                if found then return end
+                pcall(function()
+                    local ptype = Try(function() return prop:GetClass():GetFName():ToString() end) or "?"
+                    if ptype ~= "ObjectProperty" then return end
+                    local name = Try(function() return prop:GetFName():ToString() end)
+                    if not name or name == "CachedItemViewModel" then return end
+                    local v = ValidVM(Try(function() return tile[name] end))
+                    if v and ClassName(v):match("ItemViewModel$") and v:GetAddress() ~= cachedAddr then found = v; via = "property " .. name end
+                end)
+            end)
+        end)
+        cls = Try(function() return cls:GetSuperStruct() end)
+        depth = depth + 1
+    end
+    if found then return found, via end
+    local lib = StaticFindObject("/Script/UMG.Default__UserObjectListEntryLibrary")
+    if lib and lib:IsValid() then
+        local v = ValidVM(Try(function() return lib:GetListItemObject(tile) end))
+        if v and ClassName(v):match("ItemViewModel$") and v:GetAddress() ~= cachedAddr then return v, "list entry" end
+    end
+    local tex = Try(function() return tile.ItemTexture end)
+    local texAddr = (tex and tex.IsValid and tex:IsValid()) and tex:GetAddress() or nil
+    if not texAddr then return nil, "the tile shows no icon to match" end
+    local matches = {}
+    for _, ivm in ipairs(Instances("CharacterInventoryViewModel")) do
+        local arr = Try(function() return ivm.CarriedItemViewModels end)
+        for i = 1, Count(arr) do
+            local v = ValidVM(arr[i])
+            if v and v:GetAddress() ~= cachedAddr then
+                local owner = Try(function() return v.ContextualRulesetActor end)
+                local t = Try(function() return v.ItemTexture end)
+                if owner and owner.IsValid and owner:IsValid() and owner:GetAddress() == carrier:GetAddress()
+                   and t and t.IsValid and t:IsValid() and t:GetAddress() == texAddr then
+                    matches[#matches + 1] = v
+                end
+            end
+        end
+    end
+    if #matches == 0 then return nil, "no carried item shows this icon" end
+    local first = ItemText(matches[1])
+    for i = 2, #matches do
+        if ItemText(matches[i]) ~= first then
+            local names = {}
+            for j = 1, #matches do names[j] = ItemText(matches[j]) end
+            return nil, "several different carried items share this icon: " .. table.concat(names, ", ")
+        end
+    end
+    return matches[1], #matches == 1 and "icon match" or string.format("icon match (%d alike)", #matches)
 end
 local function TransferFallback(menu, text)
     if not (text and Active()) then return end
     local party = PartyArray()
     if Count(party) <= 4 then return end
-    local item, tile = TileItemOf(menu)
-    local vm, how = nil, nil
-    if not item then
+    local anchor = Try(function() return menu.Anchor end)
+    local isTile = anchor and anchor.IsValid and anchor:IsValid() and ClassName(anchor):match("ItemTile") ~= nil
+    local vm, how
+    local carrier = CarrierOf(nil)                                -- the hero whose inventory is open
+    if isTile and carrier then
+        vm, how = RealItemVMOfTile(anchor, carrier)
+        if not vm then Out("transfer: fallback refused %q: %s (%s)", text, tostring(how), ClassName(anchor)) return end
+        how = how .. " of " .. ClassName(anchor)
+    else
         vm, how = ItemViewModelOf(menu)
         if not vm then Out("transfer: fallback: no item behind the menu (anchor %s)", tostring(how)) return end
+        carrier = CarrierOf(vm)
     end
-    local carrier = CarrierOf(vm)
     if not carrier then Out("transfer: fallback: no carrier for %q", text) return end
     local receiver = nil
     for i = 1, Count(party) do
@@ -2436,17 +2486,9 @@ local function TransferFallback(menu, text)
         end
     end
     if not receiver then Out("transfer: fallback: no party member named in %q", text) return end
-    if item then
-        local ok, err = ServerTransfer(carrier, receiver, item)
-        Out("transfer: fallback %q: %s -> %s: %s; item %s (the %s tile's own item)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()),
-            ok and "requested" or tostring(err), ShortName(item:GetFullName()), ClassName(tile))
-        if ok then return end
-        vm, how = ItemViewModelOf(menu)                   -- the command refused the tile's item: the view model, with its hazard
-        if not vm then return end
-    end
     local ok, err = pcall(function() vm:TransferItem(carrier, receiver, -1, false) end)
-    Out("transfer: fallback %q: %s -> %s: %s; item %s at %s (%s)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()), ok and "requested" or tostring(err),
-        ItemText(vm), tostring(Try(function() return vm.ItemLocation end)), tostring(how))
+    Out("transfer: fallback %q: %s -> %s: %s; item %s (%s)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()),
+        ok and "requested" or tostring(err), ItemText(vm), tostring(how))
 end
 local LAST_MENU_CLICK, LAST_TRANSFER_AT = -10, -10
 TRANSFER_SERIAL = 0
