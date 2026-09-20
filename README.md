@@ -42,7 +42,7 @@ Uninstall: run the installer again and press **u**.
 | **Ctrl+Shift+F** | party heal: re-activates the formation manager, restarts follower AI, re-selects your hero |
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
-was only tested with 6; `EnemyHitPointsPercent=100`). Logs: `BiggerParty.log` (native patcher) and `ue4ss\UE4SS.log` (Lua).
+was only tested with 6; `EnemyHitPointsPercent=100`; `CombatExperienceAsIfFour=1`). Logs: `BiggerParty.log` (native patcher) and `ue4ss\UE4SS.log` (Lua).
 
 GiveSpellbook (host / single player only): **Ctrl+Delete** grants a Wizard spellbook to any hero whose
 spellcasting reports it missing; **Ctrl+Backspace** reports; **Ctrl+Shift+Delete** forces one on everyone
@@ -80,6 +80,15 @@ sessions; with the Narrator installed the new value is spoken, otherwise it only
 so it also covers monsters that spawn later and saves loaded afterwards; damage already taken is kept.
 Setting it back to `100` restores the monsters the mod changed; a monster raised under a different
 percentage in an earlier session is left as it is. There is no row for it on the Difficulty screen yet.
+
+## Experience with six heroes
+
+The game pools a fight's XP (every hostile's challenge-rating value) and divides it by the number of
+contenders on the party's side, so with six heroes each gets a sixth instead of a quarter — two-thirds
+the levelling pace — and a guest fighting alongside (Jebfa) takes a share that goes nowhere. With
+`CombatExperienceAsIfFour=1` (the default) the host tops every hero up to a four-hero share when a battle
+ends, through the game's own XP grant, so the console shows the extra gain as a second line. `0` keeps
+the game's split. Quest and world-event XP ("Each party member receives…") were never split.
 
 ## Known limitations
 

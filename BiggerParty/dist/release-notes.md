@@ -1,5 +1,11 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.4.3** — combat XP no longer shrinks with party size. The game pools a fight's XP and divides it by the
+number of contenders on the party's side, so six heroes each got a sixth instead of a quarter (and a guest
+such as Jebfa takes a share that goes nowhere). The host now tops every hero up to a four-hero share when a
+battle ends, through the game's own XP grant, so the console shows the extra gain. `CombatExperienceAsIfFour=1`
+in `BiggerParty.ini` (0 restores the game's split). Quest and world-event XP were never split and are unchanged.
+
 **1.4.2** — "Transfer to …" entries beyond the third now work for the other players too, not only the
 host. The fallback matched the receiver by the hero's actor name, which only carries the name on the host's
 machine (clients see `RulesetActor_<id>`); it now reads the first name from the replicated identity

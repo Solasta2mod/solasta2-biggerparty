@@ -17,6 +17,7 @@
 --   MaxPlayers=6                 (human players per hosted session; default = PartySize)
 --   CameraFovMultiplier=1.35     (optional; default grows with PartySize)
 --   EnemyHitPointsPercent=100    (hostile monsters' maximum hit points, % of their definition; host only)
+--   CombatExperienceAsIfFour=1   (combat XP per hero as in a four-hero party; the game splits it by head count; host only)
 --
 -- Hotkeys:
 --   Ctrl+Shift+Tab         toggle Enabled on/off (takes effect for the next new campaign / lobby)
@@ -115,7 +116,7 @@ local function FindIniPath()
     return nil
 end
 
-local CFG = { Enabled = true, PartySize = 6, MaxPlayers = 0, CameraFovMultiplier = nil, EnemyHitPointsPercent = 100 }   -- MaxPlayers 0 = follow PartySize
+local CFG = { Enabled = true, PartySize = 6, MaxPlayers = 0, CameraFovMultiplier = nil, EnemyHitPointsPercent = 100, CombatExperienceAsIfFour = true }   -- MaxPlayers 0 = follow PartySize
 
 local function ReadConfig()
     local p = FindIniPath()
@@ -127,7 +128,8 @@ local function ReadConfig()
             elseif k:lower() == "partysize" then CFG.PartySize = tonumber(v) or 6
             elseif k:lower() == "maxplayers" then CFG.MaxPlayers = tonumber(v) or 0
             elseif k:lower() == "camerafovmultiplier" then CFG.CameraFovMultiplier = tonumber(v)
-            elseif k:lower() == "enemyhitpointspercent" then CFG.EnemyHitPointsPercent = tonumber(v) or 100 end
+            elseif k:lower() == "enemyhitpointspercent" then CFG.EnemyHitPointsPercent = tonumber(v) or 100
+            elseif k:lower() == "combatexperienceasiffour" then CFG.CombatExperienceAsIfFour = (v ~= "0") end
         end
     end
     if CFG.PartySize < 1 then CFG.PartySize = 1 end
@@ -2176,6 +2178,111 @@ end
 -- written for three receivers (four heroes minus the carrier): entries four and five do nothing. When a
 -- transfer entry is clicked and no transfer follows, the mod does it through the item's own view model.
 local TRANSFER_SEEN = false
+--------------------------------------------------------------------------------------------------
+-- Combat experience with more than four heroes. ABattle::ConcludeBattle divides the battle's
+-- EncounterXPAmount (every hostile contender's XP reward) by the number of contenders on the party's
+-- team and gives each of them that share: six heroes level at two-thirds the pace of four. The host
+-- watches the battles and, once one has ended, tops every hero up to a four-hero share through the
+-- game's own grant functor (the console shows the extra gain as a second line). Guests fighting on the
+-- party's side count in the game's divisor but have no progress component, so they get nothing either way.
+--------------------------------------------------------------------------------------------------
+local BATTLES = {}                 -- address -> { id, pool, heroes, n, state, done, seen }
+local XP_FUNCTOR_CDO = nil
+local function PartyTeamId()
+    local party = PartyArray()
+    for i = 1, Count(party) do
+        local m = party[i]
+        local id = m and m:IsValid() and Try(function() return m.MyTeamID.TeamID end)
+        if id ~= nil then return id end
+    end
+    return nil
+end
+local function ContenderRulesetActor(c)
+    if not (c and c.IsValid and c:IsValid()) then return nil end
+    local ra = Try(function() return c:GetContenderRulesetActor() end)
+    if ra and ra.IsValid and ra:IsValid() then return ra end
+    if Try(function() return c.RulesetId end) ~= nil then return c end     -- already a ruleset actor
+    return Try(function() return HeroForPawn(c) end)
+end
+local function GrantExperienceTo(hero, amount)
+    if not XP_FUNCTOR_CDO then
+        XP_FUNCTOR_CDO = StaticFindObject("/Script/Brimstone.Default__FunctorAsync_GrantExperience")
+        if not (XP_FUNCTOR_CDO and XP_FUNCTOR_CDO:IsValid()) then XP_FUNCTOR_CDO = nil; return false, "no grant functor" end
+    end
+    local functor = nil
+    local ok, err = pcall(function() functor = XP_FUNCTOR_CDO:Functor_GrantExperienceAmount(hero, amount) end)
+    if not ok then return false, tostring(err) end
+    if not (functor and functor.IsValid and functor:IsValid()) then return false, "functor not created" end
+    ok, err = pcall(function() functor:Activate() end)
+    if not ok then return false, tostring(err) end
+    return true
+end
+local function TopUpBattle(rec, why)
+    rec.done = true
+    if rec.n <= 4 or #rec.heroes == 0 or rec.pool <= 0 then
+        Out("combat xp: battle %s %s: pool %.0f, %d party contender(s), nothing to add", rec.id, why, rec.pool, rec.n)
+        return
+    end
+    local extra = math.floor(rec.pool / 4) - math.floor(rec.pool / rec.n)
+    if extra <= 0 then return end
+    local given, names = 0, {}
+    for _, h in ipairs(rec.heroes) do
+        if h:IsValid() then
+            local ok, err = GrantExperienceTo(h, extra)
+            if ok then given = given + 1; names[#names + 1] = HeroLabelRef and HeroLabelRef(h) or ShortName(h:GetFullName())
+            else Out("combat xp: could not grant %d to %s: %s", extra, ShortName(h:GetFullName()), tostring(err)) end
+        end
+    end
+    Out("combat xp: battle %s %s: pool %.0f split %d ways by the game (%d each); +%d to %d hero(es) for a four-hero share of %d: %s",
+        rec.id, why, rec.pool, rec.n, math.floor(rec.pool / rec.n), extra, given, math.floor(rec.pool / 4), table.concat(names, ", "))
+end
+local function WatchBattles()
+    if not (CFG.Enabled and CFG.CombatExperienceAsIfFour and IsHost()) then return end
+    local now = os.clock()
+    local alive = {}
+    for _, b in ipairs(Instances("Battle")) do
+        local key = b:GetAddress()
+        alive[key] = true
+        local state = Try(function() return b.BattleState end)
+        local rec = BATTLES[key]
+        if not rec then
+            rec = { id = tostring(Try(function() return b.BattleId end) or key), pool = 0, heroes = {}, n = 0, state = state, done = false, seen = now }
+            BATTLES[key] = rec
+        end
+        if not rec.done then
+            local pool = Try(function() return b.EncounterXPAmount end)
+            if pool then rec.pool = pool end
+            -- the party-team contenders: what the game divides by, and who to top up
+            local team = PartyTeamId()
+            local contenders = Try(function() return b.Contenders end)
+            if team ~= nil and contenders then
+                local heroes, n = {}, 0
+                for i = 1, Count(contenders) do
+                    local ra = ContenderRulesetActor(contenders[i])
+                    if ra and Try(function() return ra.MyTeamID.TeamID end) == team then
+                        n = n + 1
+                        if HeroIdentity(ra) then heroes[#heroes + 1] = ra end
+                    end
+                end
+                if n > 0 then rec.heroes, rec.n = heroes, n end
+            end
+            if rec.state ~= state then
+                Out("combat xp: battle %s state %s -> %s (pool %.0f, %d party contender(s))", rec.id, tostring(rec.state), tostring(state), rec.pool, rec.n)
+                rec.state = state
+            end
+            if state == 4 then TopUpBattle(rec, "ended") end       -- EBattleState::Ended: the game has granted its share
+        end
+    end
+    for key, rec in pairs(BATTLES) do
+        if not alive[key] then
+            if not rec.done and rec.state == 3 then TopUpBattle(rec, "gone") end   -- was Ending (the game had decided it), then destroyed before Ended was seen
+            BATTLES[key] = nil
+        elseif now - rec.seen > 7200 then
+            BATTLES[key] = nil
+        end
+    end
+end
+
 -- A hero's first name from its identity component (replicated: right on every machine). The actor name
 -- only carries it on the host; clients see "RulesetActor_<id>"
 local function HeroGivenName(hero)
@@ -2588,6 +2695,11 @@ Every(250, function()
     if not ok then HpError("ownership watch", err) end
     ok, err = pcall(WatchFormationManager)
     if not ok then HpError("formation manager watch", err) end
+end)
+
+Every(250, function()
+    local ok, err = pcall(WatchBattles)
+    if not ok then HpError("battle watch", err) end
 end)
 
 Every(3000, function()
