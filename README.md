@@ -105,7 +105,7 @@ percentage in an earlier session is left as it is. There is no row for it on the
   party-formation manager switched off after some loads, and the mod switches it back on within seconds.
   Ctrl+Shift+F applies the remaining known nudges by hand.
 - **Item transfers.** The item menu's "Transfer to …" entries beyond the third did nothing (the game's handler
-  was written for three receivers); the mod performs those transfers itself.
+  was written for three receivers); the mod performs those transfers itself, for every player.
 - **NPC guests** who travel with the party (the game's own guest members) get no portrait on the
   inventory strip and cannot receive items, as in the unmodded game.
 - **Players versus heroes.** `PartySize` is the number of heroes; `MaxPlayers` (in `BiggerParty.ini`) is

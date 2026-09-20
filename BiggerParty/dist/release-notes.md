@@ -1,5 +1,10 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.4.2** — "Transfer to …" entries beyond the third now work for the other players too, not only the
+host. The fallback matched the receiver by the hero's actor name, which only carries the name on the host's
+machine (clients see `RulesetActor_<id>`); it now reads the first name from the replicated identity
+component. Client logs also name heroes properly. Everyone should update.
+
 **1.4.1** — the Narrator, when installed, says the enemy hit-point percentage aloud on Ctrl+Shift+Up / Down
 (the value was only visible in the log, and it persists between sessions, so it was easy to lose track of
 where it stood). Ten seconds after every level load the mod now logs one "after load" line (possessed pawn,

@@ -2176,7 +2176,26 @@ end
 -- written for three receivers (four heroes minus the carrier): entries four and five do nothing. When a
 -- transfer entry is clicked and no transfer follows, the mod does it through the item's own view model.
 local TRANSFER_SEEN = false
-local function HeroGivenName(hero) return (ShortName(hero:GetFullName()):match("^([^_]+)") or "") end
+-- A hero's first name from its identity component (replicated: right on every machine). The actor name
+-- only carries it on the host; clients see "RulesetActor_<id>"
+local function HeroGivenName(hero)
+    local ident = HeroIdentity(hero)
+    if ident and ident:IsValid() then
+        local n = Str(Try(function() return ident:GetFirstName() end))
+        if n and n ~= "" and n ~= "None" then return n end
+    end
+    return (ShortName(hero:GetFullName()):match("^([^_]+)") or "")
+end
+-- for the log: the name plus the actor id, on clients too
+local function HeroLabel(hero)
+    local short = ShortName(hero:GetFullName())
+    if short:match("^RulesetActor_") then
+        local n = HeroGivenName(hero)
+        if n ~= "" and n ~= "RulesetActor" then return n .. short:sub(#"RulesetActor" + 1) end
+    end
+    return short
+end
+HeroLabelRef = HeroLabel
 local function LineText(line)
     local text = nil
     ForEachWidget(line, function(c)
@@ -2472,7 +2491,7 @@ local function PostLoadReport()
     local view = pc and pc:IsValid() and Try(function() return pc.PlayerCameraManager:GetViewTarget() end)
     local mine = {}
     for _, h in ipairs(HeroArray()) do
-        if IsMine(h) then mine[#mine + 1] = ShortName(h:GetFullName()):match("^([^_]+)") or "?" end
+        if IsMine(h) then mine[#mine + 1] = HeroLabelRef and HeroLabelRef(h) or (ShortName(h:GetFullName()):match("^([^_]+)") or "?") end
     end
     local up = {}
     for _, w in ipairs(Instances("UserWidget")) do
@@ -2526,7 +2545,7 @@ local function WatchOwnership()
             local ps = OwnerStateOf(m)
             local key = m:GetAddress()
             local now = ps and ShortName(ps:GetFullName()) or "NONE"
-            local name = ShortName(m:GetFullName())
+            local name = HeroLabelRef and HeroLabelRef(m) or ShortName(m:GetFullName())
             names[#names + 1] = name .. (ps and "" or " (no owner)")
             if OWNER_SEEN[key] == nil then
                 if not ps then Out("owner: party member %s (%s) has no controlling player state", name, ClassName(m)) end
