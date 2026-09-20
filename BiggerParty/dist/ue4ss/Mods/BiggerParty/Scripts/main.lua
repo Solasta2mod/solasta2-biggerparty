@@ -2197,6 +2197,14 @@ local function PartyTeamId()
     end
     return nil
 end
+-- the game's own criterion for who receives a share: a hero progress component (guests have none)
+local HERO_PROGRESS_CLASS = nil
+local function HasHeroProgress(ra)
+    HERO_PROGRESS_CLASS = HERO_PROGRESS_CLASS or StaticFindObject("/Script/Brimstone.HeroProgressComponent")
+    if not (HERO_PROGRESS_CLASS and HERO_PROGRESS_CLASS:IsValid()) then return false end
+    local c = Try(function() return ra:GetComponentByClass(HERO_PROGRESS_CLASS) end)
+    return c ~= nil and c.IsValid ~= nil and c:IsValid()
+end
 local function ContenderRulesetActor(c)
     if not (c and c.IsValid and c:IsValid()) then return nil end
     local ra = Try(function() return c:GetContenderRulesetActor() end)
@@ -2246,7 +2254,7 @@ local function WatchBattles()
         local state = Try(function() return b.BattleState end)
         local rec = BATTLES[key]
         if not rec then
-            rec = { id = tostring(Try(function() return b.BattleId end) or key), pool = 0, heroes = {}, n = 0, state = state, done = false, seen = now }
+            rec = { id = ShortName(b:GetFullName()), pool = 0, heroes = {}, n = 0, state = state, done = false, seen = now }
             BATTLES[key] = rec
         end
         if not rec.done then
@@ -2261,7 +2269,7 @@ local function WatchBattles()
                     local ra = ContenderRulesetActor(contenders[i])
                     if ra and Try(function() return ra.MyTeamID.TeamID end) == team then
                         n = n + 1
-                        if HeroIdentity(ra) then heroes[#heroes + 1] = ra end
+                        if HasHeroProgress(ra) then heroes[#heroes + 1] = ra end
                     end
                 end
                 if n > 0 then rec.heroes, rec.n = heroes, n end

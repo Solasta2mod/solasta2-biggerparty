@@ -1,5 +1,9 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.4.7** — the combat XP top-up (verified in play: a 325 XP fight split seven ways became 81 per hero, as
+with four) no longer attempts a grant on an NPC guest; the game's criterion, a hero progress component, is
+used. Host-side only. Battles are logged by actor name.
+
 **1.4.6** — "Transfer to …" beyond the third entry moved the worn robe instead of the scale mail that was
 right-clicked. The tile you right-click keeps only a scratch view model, re-bound to the *worn* item for
 the comparison tooltip while an equippable item is hovered, and the fallback transferred through that.
