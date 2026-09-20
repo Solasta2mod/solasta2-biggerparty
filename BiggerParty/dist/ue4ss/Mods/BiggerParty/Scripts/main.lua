@@ -2314,6 +2314,38 @@ local function LineText(line)
     return text
 end
 local function ValidVM(vm) return (vm and vm.IsValid and vm:IsValid()) and vm or nil end
+-- The item view model a widget carries: a named getter, else any object property holding one (the grid
+-- tile that opened the menu keeps its view model under a name of its own), else the list entry's object
+local function ItemVMOfWidget(w)
+    local vm = ValidVM(Try(function() return w.CachedItemViewModel end)) or ValidVM(Try(function() return w:GetItemViewModel() end))
+    if vm then return vm, "getter" end
+    local found = nil
+    local cls = Try(function() return w:GetClass() end)
+    local depth = 0
+    while cls and cls:IsValid() and depth < 6 and not found do
+        pcall(function()
+            cls:ForEachProperty(function(prop)
+                if found then return end
+                pcall(function()
+                    local ptype = Try(function() return prop:GetClass():GetFName():ToString() end) or "?"
+                    if ptype ~= "ObjectProperty" then return end
+                    local name = Try(function() return prop:GetFName():ToString() end)
+                    local v = name and ValidVM(Try(function() return w[name] end))
+                    if v and ClassName(v):match("ItemViewModel$") then found = v end
+                end)
+            end)
+        end)
+        cls = Try(function() return cls:GetSuperStruct() end)
+        depth = depth + 1
+    end
+    if found then return found, "property" end
+    local lib = StaticFindObject("/Script/UMG.Default__UserObjectListEntryLibrary")
+    if lib and lib:IsValid() then
+        local v = ValidVM(Try(function() return lib:GetListItemObject(w) end))
+        if v and ClassName(v):match("ItemViewModel$") then return v, "list entry" end
+    end
+    return nil
+end
 local function ItemViewModelOf(menu)
     local anchor = Try(function() return menu.Anchor end)
     local anchorText = (anchor and anchor.IsValid and anchor:IsValid()) and (ShortName(anchor:GetFullName()) .. " (" .. ClassName(anchor) .. ")") or "none"
@@ -2321,8 +2353,8 @@ local function ItemViewModelOf(menu)
     local w = anchor
     for _ = 1, 24 do
         if not (w and w.IsValid and w:IsValid()) then break end
-        local vm = ValidVM(Try(function() return w.CachedItemViewModel end)) or ValidVM(Try(function() return w:GetItemViewModel() end))
-        if vm then return vm, anchorText end
+        local vm, via = ItemVMOfWidget(w)
+        if vm then return vm, anchorText .. "; " .. via .. " of " .. ClassName(w) end
         local parent = Try(function() return w:GetParent() end)
         if not (parent and parent:IsValid()) then
             local tree = Try(function() return w:GetOuter() end)
@@ -2332,11 +2364,22 @@ local function ItemViewModelOf(menu)
         w = parent
     end
     -- the item the inventory has selected (a right-click selects the tile first)
+    -- last resort: the item the inventory has selected. That is the last tile left-clicked, which is not
+    -- always the one right-clicked (a worn robe went instead of the scale mail once): say so in the log
     for _, ivm in ipairs(Instances("CharacterInventoryViewModel")) do
         local vm = ValidVM(Try(function() return ivm.SelectedItemViewModel end))
-        if vm then return vm, anchorText .. "; via the inventory's selected item" end
+        if vm then return vm, anchorText .. "; via the inventory's SELECTED item (may not be the one right-clicked)" end
     end
     return nil, anchorText
+end
+local function ItemText(vm)
+    for _, getter in ipairs({ "GetDisplayName", "GetName", "GetTitle", "GetItemName" }) do
+        local t = Str(Try(function() return vm[getter](vm) end))
+        if t and t ~= "" and not t:match("^ItemViewModel") then return t end
+    end
+    local item = Try(function() return vm.Item end)
+    local t = item and item.IsValid and item:IsValid() and Str(Try(function() return item:GetDisplayName() end))
+    return (t and t ~= "") and t or ShortName(vm:GetFullName())
 end
 local function CarrierOf(vm)
     local c = Try(function() return vm.ContextualRulesetActor end)
@@ -2368,7 +2411,8 @@ local function TransferFallback(menu, text)
     end
     if not receiver then Out("transfer: fallback: no party member named in %q", text) return end
     local ok, err = pcall(function() vm:TransferItem(carrier, receiver, -1, false) end)
-    Out("transfer: fallback %q: %s -> %s: %s", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()), ok and "requested" or tostring(err))
+    Out("transfer: fallback %q: %s -> %s: %s; item %s (%s)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()), ok and "requested" or tostring(err),
+        ItemText(vm), tostring(how))
 end
 local LAST_MENU_CLICK, LAST_TRANSFER_AT = -10, -10
 TRANSFER_SERIAL = 0
