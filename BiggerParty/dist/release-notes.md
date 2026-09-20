@@ -1,9 +1,12 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
-**1.4.4** — "Transfer to …" beyond the third entry moved the wrong item once: the fallback took the
-inventory's *selected* item (the last tile left-clicked) instead of the tile right-clicked, so a worn robe
-went instead of the scale mail. It now reads the item from the right-clicked tile itself and logs which
-item it moved and how it found it.
+**1.4.5** — "Transfer to …" beyond the third entry moved the worn robe instead of the scale mail that was
+right-clicked. The tile you right-click keeps a *comparison* view model of the worn item while an
+equippable item is hovered, and the fallback transferred through that. It now sends the tile's own item
+through the game's server command directly, and logs the item it moved.
+
+**1.4.4** — the fallback took the inventory's *selected* item (the last tile left-clicked) as a last resort;
+it now reads the right-clicked tile and logs which item it moved and how it found it.
 
 **1.4.3** — combat XP no longer shrinks with party size. The game pools a fight's XP and divides it by the
 number of contenders on the party's side, so six heroes each got a sixth instead of a quarter (and a guest

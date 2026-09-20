@@ -2373,6 +2373,8 @@ local function ItemViewModelOf(menu)
     return nil, anchorText
 end
 local function ItemText(vm)
+    local n = Str(Try(function() return vm.ItemName end))
+    if n and n ~= "" then return n end
     for _, getter in ipairs({ "GetDisplayName", "GetName", "GetTitle", "GetItemName" }) do
         local t = Str(Try(function() return vm[getter](vm) end))
         if t and t ~= "" and not t:match("^ItemViewModel") then return t end
@@ -2382,7 +2384,7 @@ local function ItemText(vm)
     return (t and t ~= "") and t or ShortName(vm:GetFullName())
 end
 local function CarrierOf(vm)
-    local c = Try(function() return vm.ContextualRulesetActor end)
+    local c = vm and Try(function() return vm.ContextualRulesetActor end)
     if c and c.IsValid and c:IsValid() then return c end
     for _, scr in ipairs(Instances("InspectionScreen")) do
         if Try(function() return scr:IsVisible() end) then
@@ -2393,12 +2395,36 @@ local function CarrierOf(vm)
     end
     return nil
 end
+-- The tile that opened the menu carries the item it shows (UItemTile.Item, a ruleset actor). Its cached
+-- view model is not to be trusted: while an equippable item is hovered the tile builds a view model of
+-- the worn item for the comparison tooltip, and a transfer through that one moves the worn item (a robe
+-- went instead of the scale mail). The item goes straight through the game's server command, as the
+-- view model's own TransferItem does.
+local function TileItemOf(menu)
+    local anchor = Try(function() return menu.Anchor end)
+    if not (anchor and anchor.IsValid and anchor:IsValid()) then return nil end
+    local item = Try(function() return anchor.Item end)
+    if item and item.IsValid and item:IsValid() then return item, anchor end
+    return nil
+end
+local function ServerTransfer(carrier, receiver, item)
+    local pc = UEHelpers.GetPlayerController()
+    local cls = StaticFindObject("/Script/Brimstone.CommandsControllerComponent")
+    local cmd = pc and pc:IsValid() and cls and cls:IsValid() and Try(function() return pc:GetComponentByClass(cls) end)
+    if not (cmd and cmd:IsValid()) then return false, "no commands controller component" end
+    local ok, err = pcall(function() cmd:Server_TransferItem(carrier, receiver, item, -1) end)
+    return ok, err
+end
 local function TransferFallback(menu, text)
     if not (text and Active()) then return end
     local party = PartyArray()
     if Count(party) <= 4 then return end
-    local vm, how = ItemViewModelOf(menu)
-    if not vm then Out("transfer: fallback: no item view model behind the menu (anchor %s)", tostring(how)) return end
+    local item, tile = TileItemOf(menu)
+    local vm, how = nil, nil
+    if not item then
+        vm, how = ItemViewModelOf(menu)
+        if not vm then Out("transfer: fallback: no item behind the menu (anchor %s)", tostring(how)) return end
+    end
     local carrier = CarrierOf(vm)
     if not carrier then Out("transfer: fallback: no carrier for %q", text) return end
     local receiver = nil
@@ -2410,9 +2436,17 @@ local function TransferFallback(menu, text)
         end
     end
     if not receiver then Out("transfer: fallback: no party member named in %q", text) return end
+    if item then
+        local ok, err = ServerTransfer(carrier, receiver, item)
+        Out("transfer: fallback %q: %s -> %s: %s; item %s (the %s tile's own item)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()),
+            ok and "requested" or tostring(err), ShortName(item:GetFullName()), ClassName(tile))
+        if ok then return end
+        vm, how = ItemViewModelOf(menu)                   -- the command refused the tile's item: the view model, with its hazard
+        if not vm then return end
+    end
     local ok, err = pcall(function() vm:TransferItem(carrier, receiver, -1, false) end)
-    Out("transfer: fallback %q: %s -> %s: %s; item %s (%s)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()), ok and "requested" or tostring(err),
-        ItemText(vm), tostring(how))
+    Out("transfer: fallback %q: %s -> %s: %s; item %s at %s (%s)", text, ShortName(carrier:GetFullName()), ShortName(receiver:GetFullName()), ok and "requested" or tostring(err),
+        ItemText(vm), tostring(Try(function() return vm.ItemLocation end)), tostring(how))
 end
 local LAST_MENU_CLICK, LAST_TRANSFER_AT = -10, -10
 TRANSFER_SERIAL = 0
