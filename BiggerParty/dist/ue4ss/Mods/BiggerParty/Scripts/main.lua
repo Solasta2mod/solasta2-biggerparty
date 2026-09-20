@@ -139,6 +139,24 @@ local function ReadConfig()
     if CFG.EnemyHitPointsPercent > 500 then CFG.EnemyHitPointsPercent = 500 end
 end
 
+-- The Narrator mod (optional) speaks lines appended to its queue file next to the ini: a spoken cue
+-- for settings changed on a key, since the log is the only other place the value shows
+local ANNOUNCE_SEQ = 0
+local function Announce(text)
+    local p = FindIniPath()
+    if not p then return false end
+    local dir = p:gsub("[^/\\]*$", "")
+    local exe = io.open(dir .. "Narrator/SolastaNarrator.exe", "rb")
+    if not exe then return false end
+    exe:close()
+    local f = io.open(dir .. "Narrator/queue.txt", "a")
+    if not f then return false end
+    ANNOUNCE_SEQ = ANNOUNCE_SEQ + 1
+    f:write(string.format('{"seq":%d,"kind":"sample","text":"%s"}\n', ANNOUNCE_SEQ, text:gsub('"', "'")))
+    f:close()
+    return true
+end
+
 -- rewrite one key in the ini (kept in place; appended when missing). The DLL's watcher re-reads it within a second.
 local function WriteIniValue(key, value)
     local p = FindIniPath()
@@ -1757,6 +1775,7 @@ local function AdjustEnemyHitPoints(delta)
     if WriteIniValue("EnemyHitPointsPercent", tostring(v)) then
         local okS, n = pcall(ScaleEnemyHitPoints, false)
         Out("enemy hit points: %d%% of the monster definition (%s; Ctrl+Shift+Up / Down)", v, okS and (tostring(n) .. " monster(s) changed now") or ("error: " .. tostring(n)))
+        Announce(string.format("Enemy hit points, %d percent.", v))
     end
 end
 
@@ -2445,6 +2464,27 @@ local function ScreensUpText()
     end
     return #names > 0 and table.concat(names, ", ") or "nothing"
 end
+-- What this machine looks like ten seconds after a level came up: a player left with a dead screen after
+-- zoning can send this line (their pawn, their heroes, any loading or transition widget still showing)
+local function PostLoadReport()
+    local pc = UEHelpers.GetPlayerController()
+    local pawn = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
+    local view = pc and pc:IsValid() and Try(function() return pc.PlayerCameraManager:GetViewTarget() end)
+    local mine = {}
+    for _, h in ipairs(HeroArray()) do
+        if IsMine(h) then mine[#mine + 1] = ShortName(h:GetFullName()):match("^([^_]+)") or "?" end
+    end
+    local up = {}
+    for _, w in ipairs(Instances("UserWidget")) do
+        local n = ClassName(w)
+        if (n:match("Loading") or n:match("Transition") or n:match("Travel") or n:match("Fade") or n:match("Splash")) and Try(function() return w:IsVisible() end) then
+            up[#up + 1] = n:gsub("_C$", "")
+        end
+    end
+    Out("after load: pawn=%s view=%s my heroes=%s (%d) loading widgets up=%s screens up: %s%s", (pawn and pawn:IsValid()) and ShortName(pawn:GetFullName()) or "NONE",
+        (view and view:IsValid()) and ShortName(view:GetFullName()) or "NONE", #mine > 0 and table.concat(mine, ",") or "none", #mine,
+        #up > 0 and table.concat(up, ",") or "none", ScreensUpText(), IsHost() and " (host)" or "")
+end
 DialogueStateTextRef = function()
     local mgr = DialogueManager()
     local inst = mgr and Try(function() return mgr.CurrentDialogueInstance end)
@@ -2515,6 +2555,7 @@ local function WatchOwnership()
     end
     local list = table.concat(names, ", ")
     if MEMBERS_SEEN ~= nil and MEMBERS_SEEN ~= list then Out("owner: party is now: %s", list) end
+    if MEMBERS_SEEN == "" and list ~= "" then After(10000, function() pcall(PostLoadReport) end) end   -- a level just came up
     MEMBERS_SEEN = list
 end
 

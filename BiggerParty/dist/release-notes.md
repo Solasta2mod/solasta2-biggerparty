@@ -1,5 +1,11 @@
 For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
 
+**1.4.1** — the Narrator, when installed, says the enemy hit-point percentage aloud on Ctrl+Shift+Up / Down
+(the value was only visible in the log, and it persists between sessions, so it was easy to lose track of
+where it stood). Ten seconds after every level load the mod now logs one "after load" line (possessed pawn,
+own heroes, any loading widget still up) on every machine, to diagnose a player left with a dead screen
+after zoning. No other changes.
+
 **1.4** — new optional extra: the **Narrator**. The game's text-only world events are read aloud with a
 neural voice as the text appears, and the outcome after your choice too; titles, options, the choice and
 reward lines stay silent. Ctrl+Shift+N steps through fifteen English voices (Emily, Irish, by default; each introduces itself; the

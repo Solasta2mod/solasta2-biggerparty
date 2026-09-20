@@ -1,4 +1,4 @@
-BiggerParty 1.4 for Solasta II (Early Access builds CL-112340 / CL-112436)
+BiggerParty 1.4.1 for Solasta II (Early Access builds CL-112340 / CL-112436)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.
@@ -21,7 +21,8 @@ IN GAME
   Ctrl+Shift+Tab        toggle the mod on/off (applies to the next new campaign / lobby)
   Ctrl+Shift+End        re-apply the card layout / camera on the creation screen
   Ctrl+Shift+Backspace  status report into <game>\Brimstone\Binaries\Win64\ue4ss\UE4SS.log
-  Ctrl+Shift+Up / Down  enemy hit points +10% / -10% (hostile monsters; host applies it; 100 = vanilla)
+  Ctrl+Shift+Up / Down  enemy hit points +10% / -10% (hostile monsters; host applies it; 100 = vanilla;
+                        the Narrator, if installed, says the new value)
   Ctrl+Shift+F          party heal (followers standing still); if they stay put, save and reload (game bug)
 
 NARRATOR (if installed)

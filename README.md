@@ -38,7 +38,7 @@ Uninstall: run the installer again and press **u**.
 | Story dialogues | work with six heroes (the mod keeps a participating hero in party slot 1 while a dialogue runs) |
 | **Ctrl+Shift+End** | re-apply the UI tweaks on the current screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
-| **Ctrl+Shift+Up / Down** | enemy hit points +10% / −10% (see below) |
+| **Ctrl+Shift+Up / Down** | enemy hit points +10% / −10% (see below; the Narrator, if installed, says the new value) |
 | **Ctrl+Shift+F** | party heal: re-activates the formation manager, restarts follower AI, re-selects your hero |
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
@@ -74,7 +74,8 @@ plays audio). The Narrator is independent of the party size and works in single 
 
 Six heroes make fights easier. `EnemyHitPointsPercent` in `BiggerParty.ini` (default `100`, 50–500) scales
 the maximum hit points of hostile monsters: `150` gives them one and a half times their book value.
-**Ctrl+Shift+Up / Ctrl+Shift+Down** change it in game by 10 and write it to the ini. The host applies it
+**Ctrl+Shift+Up / Ctrl+Shift+Down** change it in game by 10 and write it to the ini (the value persists between
+sessions; with the Narrator installed the new value is spoken, otherwise it only shows in the log). The host applies it
 (the values replicate to everyone else) to every hostile monster whose maximum is still the definition's,
 so it also covers monsters that spawn later and saves loaded afterwards; damage already taken is kept.
 Setting it back to `100` restores the monsters the mod changed; a monster raised under a different
