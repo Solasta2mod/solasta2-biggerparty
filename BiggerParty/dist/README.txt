@@ -1,4 +1,4 @@
-BiggerParty 1.4.8 for Solasta II (Early Access builds CL-112340 / CL-112436)
+BiggerParty 1.4.9 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.

@@ -14,7 +14,7 @@
 // Config: BiggerParty.ini next to this DLL ([BiggerParty] Enabled=1 PartySize=6). A watcher thread re-reads it
 // when it changes, so the in-game toggle (handled by the Lua half) applies without a restart.
 //
-// Signatures verified against build CL-112340 (2026-09-10).
+// Signatures verified against builds CL-112340 (2026-09-10), CL-112436 (2026-09-14) and CL-113670 (2026-09-21).
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -88,10 +88,12 @@ static std::vector<Patch> g_patches = {
       { 0x41, 0xBD, 0x04, 0x00, 0x00, 0x00, 0x89, 0x44, 0x24, 0x5C, 0x48, 0x8D, 0x05 }, 2, 4 },
     { "CreateOnlineHostSessionRequest MaxPlayerCount", true,
       { 0xC7, 0x80, 0xA0, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xC6, 0x40, 0x2A, 0x01 }, 6, 4 },
+    // the register the game-state pointer lives in changed between CL-112436 (rdi) and CL-113670 (rsi): that
+    // ModRM byte is a wildcard in both signatures
     { "ReadRuntimeSessionFromGameState slot cap (lea)", true,
-      { 0x44, 0x8D, 0x63, 0x04, 0x39, 0x9F, 0xC0, 0x00, 0x00, 0x00, 0x0F, 0x85 }, 3, 4 },
+      { 0x44, 0x8D, 0x63, 0x04, 0x39, -1, 0xC0, 0x00, 0x00, 0x00, 0x0F, 0x85 }, 3, 4 },
     { "ReadRuntimeSessionFromGameState slot cap (cmp)", true,
-      { 0x83, 0xFB, 0x04, 0x48, 0x8B, 0xCF, 0x44, 0x0F, 0x4C, 0xE3 }, 2, 4 },
+      { 0x83, 0xFB, 0x04, 0x48, 0x8B, -1, 0x44, 0x0F, 0x4C, 0xE3 }, 2, 4 },
 };
 
 static bool GetTextSection(uint8_t*& start, size_t& size)

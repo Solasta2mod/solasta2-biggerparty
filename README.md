@@ -1,6 +1,6 @@
 # BiggerParty — 6-hero parties and 6-player co-op for Solasta II
 
-An unofficial mod for **Solasta II** (Early Access, builds CL-112340 and CL-112436 — the 14 Sep 2026 patch) that lets a new campaign have up to
+An unofficial mod for **Solasta II** (Early Access, builds CL-112340, CL-112436 and CL-113670 — the 21 Sep 2026 patch) that lets a new campaign have up to
 six heroes and a hosted multiplayer lobby seat up to six players. Existing saves are untouched: a
 4-hero save loads exactly as vanilla.
 

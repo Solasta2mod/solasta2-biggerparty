@@ -1,4 +1,10 @@
-For Solasta II Early Access builds **CL-112340** and **CL-112436** (14 Sep 2026 patch).
+For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026) and **CL-113670** (21 Sep 2026 "Stabilization" patch).
+
+**1.4.9** — the 21 Sep 2026 patch (CL-113670). Two of the four patch sites had moved by one register (the
+player-slot cap when a saved game is re-hosted), so 1.4.8 ran with only the character-slot and lobby-size
+patches on the new build; the signatures now wildcard that byte and all four sites patch again. Every
+class, function and property the script half relies on is unchanged in the new build, and the game still
+splits combat XP by head count, so the top-up stays correct. Everyone should update.
 
 **1.4.8** — `BiggerParty-history.log` next to the ini keeps the diagnostic lines (loads, "after load", party
 ownership, transfers, XP, errors) across launches, because UE4SS wipes its own log at every start and a

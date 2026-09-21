@@ -28,7 +28,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.4.8 (game builds CL-112340 / CL-112436)";
+static const wchar_t* kVersion = L"BiggerParty 1.4.9 (game builds CL-112340 / CL-112436 / CL-113670)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
@@ -185,11 +185,12 @@ static std::wstring BrowseForGame()
 // ------------------------------------------------------------------------------------------------
 static int CheckPatchSites(const std::wstring& exe)
 {
-    static const std::vector<std::vector<uint8_t>> sigs = {
+    // same signatures as version_proxy.cpp; -1 = wildcard (a register byte that changes between builds)
+    static const std::vector<std::vector<int>> sigs = {
         { 0x41, 0xBD, 0x04, 0x00, 0x00, 0x00, 0x89, 0x44, 0x24, 0x5C, 0x48, 0x8D, 0x05 },
         { 0xC7, 0x80, 0xA0, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xC6, 0x40, 0x2A, 0x01 },
-        { 0x44, 0x8D, 0x63, 0x04, 0x39, 0x9F, 0xC0, 0x00, 0x00, 0x00, 0x0F, 0x85 },
-        { 0x83, 0xFB, 0x04, 0x48, 0x8B, 0xCF, 0x44, 0x0F, 0x4C, 0xE3 },
+        { 0x44, 0x8D, 0x63, 0x04, 0x39, -1, 0xC0, 0x00, 0x00, 0x00, 0x0F, 0x85 },
+        { 0x83, 0xFB, 0x04, 0x48, 0x8B, -1, 0x44, 0x0F, 0x4C, 0xE3 },
     };
     HANDLE h = CreateFileW(exe.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return -1;
@@ -202,9 +203,11 @@ static int CheckPatchSites(const std::wstring& exe)
             size_t hits = 0;
             const uint8_t* cur = base; const uint8_t* end = base + sz.QuadPart;
             while (cur + sig.size() <= end) {
-                cur = (const uint8_t*)memchr(cur, sig[0], end - cur - sig.size() + 1);
+                cur = (const uint8_t*)memchr(cur, (uint8_t)sig[0], end - cur - sig.size() + 1);
                 if (!cur) break;
-                if (memcmp(cur, sig.data(), sig.size()) == 0) ++hits;
+                bool same = true;
+                for (size_t k = 1; k < sig.size() && same; ++k) if (sig[k] >= 0 && cur[k] != (uint8_t)sig[k]) same = false;
+                if (same) ++hits;
                 ++cur;
             }
             if (hits == 1) ++found;
