@@ -14,7 +14,8 @@
 // Config: BiggerParty.ini next to this DLL ([BiggerParty] Enabled=1 PartySize=6). A watcher thread re-reads it
 // when it changes, so the in-game toggle (handled by the Lua half) applies without a restart.
 //
-// Signatures verified against builds CL-112340 (2026-09-10), CL-112436 (2026-09-14) and CL-113670 (2026-09-21).
+// Signatures verified against builds CL-112340 (2026-09-10), CL-112436 (2026-09-14), CL-113670 (2026-09-21)
+// and CL-114967 (2026-10-01).
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

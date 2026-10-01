@@ -5,7 +5,7 @@ How BiggerParty works, and what to do when a game patch breaks it.
 Everything below was derived from the shipping build **CL-112340** (Solasta II Early Access, 2026-09-10; the
 14 Sep 2026 patch, **CL-112436**, kept every signature and class name used here; the 21 Sep 2026 patch,
 **CL-113670**, moved the game-state pointer of `ReadRuntimeSessionFromGameState` from `rdi` to `rsi`, so that
-ModRM byte is a wildcard in both of its signatures —
+ModRM byte is a wildcard in both of its signatures; the 1 Oct 2026 patch, **CL-114967**, kept them all —
 Unreal Engine 5.6.1, internal project name `Brimstone`). Tactical Adventures ship full debug symbols
 (`Brimstone-Win64-Shipping.pdb`) next to the executable, which is what made this tractable — no signature
 guessing was needed to find the functions, only to locate them at runtime.
