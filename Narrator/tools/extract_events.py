@@ -4,10 +4,12 @@
 
 Reads ST_MainCampaignIngredients.csv straight from Brimstone-Windows.pak (tools/pakread.py; Oodle needs
 OODLE_DIR or an oo2core DLL near the game exe) and the event asset names from the IoStore index.
+The text is what the game DISPLAYS: the English localisation (Localization/Game/en/Game.locres) corrects
+many of the table's source strings (spelling, typos, rewording), and its version wins where it has one.
 Keeps only what the narrator speaks: event descriptions and outcomes. Titles, option labels, rewards
 and "TBD" placeholders are left out. The output is game text: it stays out of the repository.
 """
-import csv, io, json, os, re, sys, time
+import csv, io, json, os, re, struct, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "tools"))
 from pakread import Pak                                    # the repository's tools/pakread.py
 
@@ -65,10 +67,45 @@ def clean(text):
     t = re.sub(r"\s*\n\s*", chr(10), t).strip()
     return t
 
+def displayed_english(pak, namespace="ST_MainCampaignIngredients"):
+    """{key: text} from the English locres (format v2/v3: hashed keys, a shared string array) for one string
+    table's namespace; empty when the file is missing or of an older format."""
+    try:
+        b = pak.read("Brimstone/Content/Localization/Game/en/Game.locres")
+    except Exception:
+        return {}
+    if b[:16] != bytes.fromhex("0E147475674A03FC4A15909DC3377F1B") or b[16] < 2:
+        return {}
+    def fstr(q):
+        ln, = struct.unpack_from("<i", b, q); q += 4
+        if ln < 0: return b[q:q - 2 * ln].decode("utf-16le").rstrip("\0"), q - 2 * ln
+        return b[q:q + ln].decode("utf-8", "replace").rstrip("\0"), q + ln
+    ver = b[16]; q = 17
+    str_off, = struct.unpack_from("<q", b, q); q += 8
+    if ver >= 3: q += 4                                         # entry count
+    ns_count, = struct.unpack_from("<I", b, q); q += 4
+    wanted = {}
+    for _ in range(ns_count):
+        ns, q = fstr(q + 4)                                     # skip the namespace hash
+        kc, = struct.unpack_from("<I", b, q); q += 4
+        for _ in range(kc):
+            key, q = fstr(q + 4)                                # skip the key hash
+            idx, = struct.unpack_from("<i", b, q + 4); q += 8  # skip the source-string hash
+            if ns == namespace: wanted[key] = idx
+    q = str_off
+    sc, = struct.unpack_from("<i", b, q); q += 4
+    strings = []
+    for _ in range(sc):
+        s, q = fstr(q); strings.append(s)
+        if ver >= 3: q += 4                                     # ref count
+    return {k: strings[i] for k, i in wanted.items() if 0 <= i < len(strings)}
+
 def main():
     pak = Pak(os.path.join(PAKS, "Brimstone-Windows.pak"))
     data = pak.read("Brimstone/Content/Localization/ST_MainCampaignIngredients.csv")
     rows = list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+    shown = displayed_english(pak)
+    corrected = 0
     utoc = open(os.path.join(PAKS, "Brimstone-Windows.utoc"), "rb").read()
     asset_names = {}
     for m in re.finditer(rb"DA_EV_(\d+)_([A-Za-z0-9_]+)", utoc):
@@ -83,7 +120,9 @@ def main():
         if not name: name = asset_names.get(eid, "")
         if eid not in events:
             events[eid] = {"id": eid, "name": camel_words(name) if name else eid, "lines": []}; order.append(eid)
-        events[eid]["lines"].append({"key": key, "field": camel_words(field) or "Text", "text": clean(text)})
+        display = shown.get(key, "").strip() or text            # the label/TBD filters stay on the source text
+        if clean(display) != clean(text): corrected += 1
+        events[eid]["lines"].append({"key": key, "field": camel_words(field) or "Text", "text": clean(display)})
     def sort_key(eid):
         return (0, int(eid)) if eid.isdigit() else (1, eid)
     order.sort(key=sort_key)
@@ -103,7 +142,8 @@ def main():
                 f.write("[%s]\n%s\n\n" % (l["field"], l["text"]))
     with open(os.path.join(OUT, "world_events.json"), "w", encoding="utf-8") as f:
         json.dump([events[eid] for eid in order], f, indent=1, ensure_ascii=False)
-    print("%d events, %d passages, %d characters -> %s" % (len(events), count, total, OUT))
+    print("%d events, %d passages, %d characters (%d passages as corrected by the English localisation) -> %s"
+          % (len(events), count, total, corrected, OUT))
 
 if __name__ == "__main__":
     main()
