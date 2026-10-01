@@ -24,6 +24,8 @@ __pycache__/
 
 # private working notes, kept outside the repo
 docs-workspace-notes.md
+# private add-ons for local builds only (gen_payload.py picks them up when present)
+BiggerParty/private/
 
 # game text pulled from the paks for the narration pack, and the rendered audio — never publish
 Narrator/text/

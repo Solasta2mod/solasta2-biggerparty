@@ -1,4 +1,4 @@
-BiggerParty 1.4.9 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670)
+BiggerParty 1.4.10 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.
@@ -27,11 +27,14 @@ IN GAME
 
 NARRATOR (if installed)
   World events are read aloud as the text appears; titles, options, your choice and rewards stay silent.
+  Picking an option moves straight on to the outcome; closing the event stops the voice.
   Ctrl+Shift+N          next voice (it introduces itself; the choice is saved)
   Ctrl+Shift+M          mute / unmute
   Voices are Microsoft Edge's online neural voices: internet needed; heard lines are cached and replay
   offline. Settings: <game>\Brimstone\Binaries\Win64\Narrator\narrator.ini (Voice, Rate, Volume, Pitch).
   The helper SolastaNarrator.exe in that folder starts with the game and closes with it.
+  A recorded voice pack in Narrator\pack (MP3s + index.json), if you have one, is played instead of the
+  live voice; lines it lacks are read live. None is included.
 
 CONFIG   <game>\Brimstone\Binaries\Win64\BiggerParty.ini   (Enabled=1, PartySize=6, EnemyHitPointsPercent=100,
          CombatExperienceAsIfFour=1: the game splits a fight's XP by head count, so six heroes would level

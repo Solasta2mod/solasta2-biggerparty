@@ -1,5 +1,16 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026) and **CL-113670** (21 Sep 2026 "Stabilization" patch).
 
+**1.4.10** — Narrator improvements; the party mod itself is unchanged. Picking an option now moves the
+narration straight on to the outcome, and closing a world event (or muting) stops the voice at once:
+before, a stop let the line already playing finish. The Narrator can also play a recorded voice pack: if
+`Narrator\pack` holds one (an MP3 per world-event passage plus `index.json`), its recordings are used
+instead of the live voice, matched to the passage on screen, tolerant of small wording changes from game
+patches, and starting while the first sentence is still being typed; anything the pack lacks is read live
+as before. No pack ships with the mod (recordings are made from the game's own text). The installer now
+recognises an earlier BiggerParty `version.dll` and updates it without asking whether to replace "a
+different version.dll". Everyone with the Narrator should update (the installer replaces the script and
+its helper together).
+
 **1.4.9** — the 21 Sep 2026 patch (CL-113670). Two of the four patch sites had moved by one register (the
 player-slot cap when a saved game is re-hosted), so 1.4.8 ran with only the character-slot and lobby-size
 patches on the new build; the signatures now wildcard that byte and all four sites patch again. Every

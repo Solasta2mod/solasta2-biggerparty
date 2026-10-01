@@ -55,6 +55,7 @@ World events — the text-only encounters on the road ("Voracious seagulls circl
 voiced by the game. With the Narrator installed, the story text is read aloud as it appears on screen, and
 the outcome after your choice is read too. Titles, the options, the choice you made and the reward lines
 are deliberately left silent. Dialogue scenes are not narrated (they have their own voice acting).
+Picking an option moves the narration straight on to the outcome, and closing an event stops it at once.
 
 | | |
 |---|---|
@@ -70,6 +71,12 @@ starts with the game and that exits when the game does (it is a packaged Python 
 software is suspicious of those; it only reads the mod's queue file, talks to Edge's speech service and
 plays audio). The Narrator is independent of the party size and works in single player and multiplayer
 (each player hears their own narration).
+
+If a recorded **voice pack** is installed in `Narrator\pack` (one MP3 per world-event passage plus an
+`index.json`), its recordings are played instead of the live voice: matched to the passage on screen,
+tolerant of small wording changes from game patches, and starting while the text is still being typed.
+Lines the pack lacks are read by the live voice. No pack is included, since recordings are made from the
+game's own text; see [how the Narrator works](docs/internals.md#narrator-voicing-the-world-events).
 
 ## Enemy hit points
 

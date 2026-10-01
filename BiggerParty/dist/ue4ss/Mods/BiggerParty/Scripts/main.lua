@@ -2896,3 +2896,21 @@ end)
 
 Keep("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift+End re-apply, Ctrl+Shift+Backspace status",
     tostring(CFG.Enabled), CFG.PartySize, iniPath or "ini not found: using defaults")
+
+-- An optional extra.lua next to this script (a local add-on, not part of the release) runs last and is
+-- handed the helpers below. Inside a function of its own: this chunk is at Lua's limit of 200 locals.
+;(function()
+    local ini = FindIniPath()
+    local dir = (ini and ini:match("^(.*[/\\])")) or ""
+    local f = io.open(dir .. "ue4ss/Mods/BiggerParty/Scripts/extra.lua", "r")
+    if f then
+        local src = f:read("*a"); f:close()
+        local fn, err = load(src, "@extra.lua")
+        local ok = false
+        if fn then
+            ok, err = pcall(fn, { Every = Every, Try = Try, Out = Out, Instances = Instances, CFG = CFG,
+                ContenderRulesetActor = ContenderRulesetActor, HeroGivenName = HeroGivenName, GameDir = dir })
+        end
+        if not ok then Out("extra.lua: %s", tostring(err)) end
+    end
+end)()

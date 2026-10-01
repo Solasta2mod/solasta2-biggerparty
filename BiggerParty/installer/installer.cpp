@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <cstdio>
 #include <cstdint>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -28,7 +29,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.4.9 (game builds CL-112340 / CL-112436 / CL-113670)";
+static const wchar_t* kVersion = L"BiggerParty 1.4.10 (game builds CL-112340 / CL-112436 / CL-113670)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
@@ -103,6 +104,13 @@ static bool PayloadMatchesFile(const wchar_t* rel, const std::wstring& path)
     const void* d; size_t n; if (!GetPayload(pf->id, d, n)) return false;
     auto f = ReadAll(path);
     return f.size() == n && memcmp(f.data(), d, n) == 0;
+}
+// An earlier BiggerParty build of version.dll (every build differs byte for byte): it carries this log line.
+static bool IsBiggerPartyDll(const std::wstring& path)
+{
+    auto f = ReadAll(path);
+    static const char kMark[] = "BiggerParty patcher loaded into";
+    return std::search(f.begin(), f.end(), kMark, kMark + sizeof(kMark) - 1) != f.end();
 }
 static std::wstring ToWin(const wchar_t* rel) { std::wstring s = rel; for (auto& c : s) if (c == L'/') c = L'\\'; return s; }
 
@@ -336,7 +344,7 @@ static int Install(const std::wstring& root, bool spellbook, bool narrator)
 
     // version.dll slot
     std::wstring vdll = Join(win64, L"version.dll");
-    if (Exists(vdll) && !PayloadMatchesFile(L"version.dll", vdll)) {
+    if (Exists(vdll) && !PayloadMatchesFile(L"version.dll", vdll) && !IsBiggerPartyDll(vdll)) {
         Say(L"\nA different version.dll already exists in the game folder (another mod, e.g. Manual Dice Roll, uses the same slot).");
         if (!Ask(L"Replace it with BiggerParty's version.dll?", false)) { Say(L"Aborted."); return 2; }
     }

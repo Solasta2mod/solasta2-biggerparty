@@ -60,6 +60,16 @@ local function Stop()
     local f = io.open(QueuePath(), "a")
     if f then f:write('{"kind":"stop"}\n'); f:close() end
 end
+-- the opening of a first sentence still being typed: lets the companion start a recorded passage early
+-- (never spoken by itself; the companion only uses it to find a recording)
+local function Probe(kind, text)
+    text = text:gsub("<[^>]*$", ""):gsub("<[^>]->", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    local f = io.open(QueuePath(), "a")
+    if f then
+        local esc = text:gsub("\\", "\\\\"):gsub('"', '\\"')
+        f:write(string.format('{"kind":"probe","for":"%s","text":"%s"}\n', kind, esc)); f:close()
+    end
+end
 
 -- reward lines are not narrated: experience, items, gold and the like
 -- roll results the game prints in front of an outcome (never narrated); longest first so "Critical Success"
@@ -137,7 +147,8 @@ end
 -- is a stream: a sentence is spoken as soon as it is complete, the rest once the text has stopped changing
 local STABLE_POLLS = 4          -- four polls at 250 ms: a second without change
 local SCREEN_SEEN = nil
-local STREAMS = {}              -- slot -> { last, stable, spoken, done }
+local STREAMS = {}              -- slot -> { last, stable, spoken, done, muted }
+local CHOSEN = {}               -- outcome slots already counted as a newly chosen option on this screen
 -- Markup out (the description blocks are rich text: a credit line comes as a styled run), whitespace
 -- collapsed, and the author's credit that community events carry in front is not narrated
 local function CleanText(text)
@@ -167,8 +178,15 @@ local function ConsiderStream(slot, kind, text, markup)
     if not text or text == "" then return end
     local st = STREAMS[slot]
     if not st then st = { last = "", stable = 0, spoken = {}, done = false }; STREAMS[slot] = st end
+    if st.muted then return end                       -- an option was chosen since: this text is left behind
     if text == st.last then st.stable = st.stable + 1 else st.last = text; st.stable = 1 end
     local pieces, tail = SplitSentences(text)
+    -- while the first sentence is still being typed, its opening goes out every couple of words: a recorded
+    -- passage that is the only one in the game starting that way can begin before the sentence is finished
+    if not st.done and #pieces == 0 and next(st.spoken) == nil then
+        local words = select(2, tail:gsub("%S+", ""))
+        if words >= 6 and words <= 40 and words >= (st.probed or 0) + 2 then st.probed = words; Probe(kind, tail) end
+    end
     if st.stable >= STABLE_POLLS then
         pieces[#pieces + 1] = tail                        -- the typewriter is done: the rest is complete too
         if not st.done and markup then Out("%s markup: %s", slot, (markup:sub(1, 200):gsub("%s+", " "))) end
@@ -185,12 +203,12 @@ local function Poll()
         if Try(function() return w:IsVisible() end) then screen = w break end
     end
     if not screen then
-        if SCREEN_SEEN then Stop(); Out("event closed"); SCREEN_SEEN = nil; STREAMS = {} end
+        if SCREEN_SEEN then Stop(); Out("event closed"); SCREEN_SEEN = nil; STREAMS = {}; CHOSEN = {} end
         return
     end
     local key = screen:GetAddress()
     if SCREEN_SEEN ~= key then
-        SCREEN_SEEN = key; STREAMS = {}
+        SCREEN_SEEN = key; STREAMS = {}; CHOSEN = {}
         Out("event opened: %s", ShortName(screen:GetFullName()))
     end
     -- the story text is narrated: the description, then the narrative part of each outcome line.
@@ -226,7 +244,18 @@ local function Poll()
             for _, word in ipairs(RESULT_WORDS) do
                 text = text:gsub("^" .. word .. "[%s:!%.%-]+(%u)", "%1")
             end
-            if text ~= "" and not IsReward(text) then ConsiderStream("outcome" .. i, "outcome", text, markup) end
+            if text ~= "" and not IsReward(text) then
+                local slot = "outcome" .. i
+                -- a new outcome line follows a click on an option: whatever is still being read stops and the
+                -- narration moves on to it. It counts once it has five words, so a reward line typing out never does
+                if not CHOSEN[slot] and select(2, text:gsub("%S+", "")) >= 5 then
+                    CHOSEN[slot] = true
+                    Stop()
+                    for s, st in pairs(STREAMS) do if s ~= slot then st.muted = true end end
+                    Out("option chosen: narration moves on to outcome %d", i)
+                end
+                ConsiderStream(slot, "outcome", text, markup)
+            end
         end
     end
 end

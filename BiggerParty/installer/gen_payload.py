@@ -3,15 +3,19 @@
 Payload kinds: 0 = UE4SS (stock experimental build), 1 = BiggerParty, 2 = GiveSpellbook, 3 = docs, 4 = Narrator.
 The Narrator companion (Narrator/companion/dist/SolastaNarrator.exe) must be built first: see Narrator/companion/narrator.py.
 Run from anywhere; paths are resolved relative to this file.
+With --private, local add-ons in BiggerParty/private/payload (kept out of the repo) are staged on top, as part
+of BiggerParty; release builds never pass it.
 """
 import os, shutil, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)                       # BiggerParty/
 WS = os.path.dirname(ROOT)                         # solasta2-mods/
-UE4SS_SRC = sys.argv[1] if len(sys.argv) > 1 else None
+PRIVATE = "--private" in sys.argv[1:]
+args = [a for a in sys.argv[1:] if a != "--private"]
+UE4SS_SRC = args[0] if args else None
 if not UE4SS_SRC or not os.path.isdir(UE4SS_SRC):
-    print("usage: gen_payload.py <path to extracted UE4SS folder containing dwmapi.dll and ue4ss/>"); sys.exit(1)
+    print("usage: gen_payload.py <path to extracted UE4SS folder containing dwmapi.dll and ue4ss/> [--private]"); sys.exit(1)
 
 STAGE = os.path.join(HERE, "payload")
 shutil.rmtree(STAGE, ignore_errors=True)
@@ -51,6 +55,19 @@ for src_rel, dst_rel in [("Scripts/main.lua", "ue4ss/Mods/Narrator/Scripts/main.
     src = os.path.join(nr, src_rel.replace("/", os.sep)); dst = os.path.join(STAGE, dst_rel.replace("/", os.sep))
     if not os.path.exists(src): print("missing " + src + " (build the Narrator companion first)"); sys.exit(1)
     os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((4, dst_rel))
+
+# local add-ons, only on request: staged as BiggerParty files, replacing any staged file of the same name
+if PRIVATE:
+    priv = os.path.join(ROOT, "private", "payload")
+    if not os.path.isdir(priv): print("--private: no " + priv); sys.exit(1)
+    for dirpath, _, files in os.walk(priv):
+        for fn in files:
+            src = os.path.join(dirpath, fn)
+            rel = os.path.relpath(src, priv).replace("\\", "/")
+            dst = os.path.join(STAGE, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst)
+            entries = [e for e in entries if e[1] != rel] + [(1, rel)]
+    print("private add-ons staged")
 
 # zero-byte files (enabled.txt markers) cannot be embedded as resources: give them one byte
 for _, rel in entries:

@@ -234,6 +234,10 @@ FWD(DWORD, VerInstallFileW,           (DWORD a, LPCWSTR b, LPCWSTR c, LPCWSTR d,
 FWD(DWORD, VerLanguageNameA,          (DWORD a, LPSTR b, DWORD c), (a, b, c))
 FWD(DWORD, VerLanguageNameW,          (DWORD a, LPWSTR b, DWORD c), (a, b, c))
 
+#ifdef BP_PRIVATE
+#include "../private/addons.inc"   // local add-ons for private builds only (BiggerParty/private, not in the repo)
+#endif
+
 // ------------------------------------------------------------------------------------------------
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 {
@@ -252,6 +256,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
         LocatePatches();
         ApplyConfig(c);
         CreateThread(nullptr, 0, WatcherThread, nullptr, 0, nullptr);
+#ifdef BP_PRIVATE
+        StartPrivate();
+#endif
     }
     return TRUE;
 }
