@@ -28,6 +28,9 @@
 
 local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
+-- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
+-- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
+BIGGERPARTY_VERSION = "1.4.13"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -3059,6 +3062,181 @@ end)()
     end)
 end)()
 
+-- Version check (multiplayer). Each player's copy of the mod tells the others its version, so a session whose copies
+-- differ is noticed. A client sends "BiggerParty:<version>" to the host as the world name of
+-- APlayerController::ServerNotifyLoadedWorld: the engine acts on that name only while the player is in the middle of a
+-- seamless level change (it compares it with the world it expects), so it goes out 20 s after a load; the game's own
+-- override of it only logs. The host hooks that call and tells every player its own version through
+-- APlayerController::ClientMessage, which the engine only prints to the console. A copy that differs, or a player
+-- who reports nothing within three minutes (BiggerParty before 1.4.13, or none), is written to the history log and
+-- shown once in the game's information dialog (UBrimstoneUIBlueprintLibrary::ShowInformationDialog) when no dialogue
+-- or world event is up. Mod options shows the version and lists everyone's. Only addresses are kept between ticks.
+-- Inside a function of its own: this chunk is at Lua's limit of 200 locals.
+;(function()
+    local MINE = BIGGERPARTY_VERSION or "?"
+    local MARK = "BiggerParty:"
+    local SILENT = 180                                -- seconds before a player who reported nothing is mentioned
+    local role = "single player"                      -- "host", "client" or "single player"
+    local reported = {}                               -- host: player name -> version
+    local hostVersion = nil                           -- client: the host's version, once heard
+    local inbox, warned, pending = {}, {}, {}
+    local loadKey, loadedAt, sentKey = nil, 0, nil
+    local firstSeen, toldKey = {}, {}                 -- host: controller address -> first seen / level told
+    local function Now() return os.time() end
+    local function LocalPC()
+        local pc = Try(function() return UEHelpers.GetPlayerController() end)
+        if pc and Try(function() return pc:IsValid() end) then return pc end
+        return nil
+    end
+    local function NameOfPC(pc)
+        local ps = Try(function() return pc.PlayerState end)
+        return (ps and Try(function() return ps:IsValid() end) and Str(Try(function() return ps:GetPlayerName() end))) or "A player"
+    end
+    local function RemoteControllers()
+        local out = {}
+        for _, p in ipairs(Instances("PlayerController")) do
+            if not Try(function() return p:IsLocalController() end) then out[p:GetAddress()] = p end
+        end
+        return out
+    end
+    local function MakeName(s)
+        local n = Try(function() return FName(s, EFindName.FNAME_Add) end)
+        return n or FName(s)
+    end
+    local function Warn(text)
+        if warned[text] then return end
+        warned[text] = true
+        Keep("version: %s", text)
+        pending[#pending + 1] = text
+    end
+    -- the game's information dialog; its two texts go by their parameter names (title, then message by default)
+    local function Dialog(pc, title, message)
+        local lib = StaticFindObject("/Script/Brimstone.Default__BrimstoneUIBlueprintLibrary")
+        if not (lib and Try(function() return lib:IsValid() end)) then Out("version: no information dialog") return false end
+        local fn = FunctionOf(lib, "ShowInformationDialog")
+        local names = {}
+        for _, q in ipairs(fn and ParamsOf(fn) or {}) do if q.type == "TextProperty" then names[#names + 1] = q.name:lower() end end
+        local a, b = title, message
+        if names[1] and names[2] and (names[2]:find("title", 1, true) or names[2]:find("header", 1, true)
+            or names[1]:find("message", 1, true) or names[1]:find("body", 1, true) or names[1]:find("desc", 1, true)) then
+            a, b = message, title
+        end
+        local ok, err = pcall(function() lib:ShowInformationDialog(pc, FText(a), FText(b)) end)
+        Out("version: information dialog (%s) %s", table.concat(names, ", "), ok and "shown" or ("failed: " .. tostring(err)))
+        return ok
+    end
+    local function Calm(pc)
+        if Now() - loadedAt < 10 then return false end
+        local pawn = Try(function() return pc:K2_GetPawn() end)
+        if not (pawn and Try(function() return pawn:IsValid() end)) then return false end
+        for _, cls in ipairs({ "DialogueScreen", "WorldEventResponseScreen" }) do
+            for _, w in ipairs(Instances(cls)) do if Try(function() return w:IsVisible() end) then return false end end
+        end
+        return true
+    end
+    -- for Mod options: its first row, and what a click on it shows
+    BiggerPartyVersionLabel = function()
+        local differs = false
+        if role == "client" then differs = hostVersion ~= nil and hostVersion ~= MINE
+        elseif role == "host" then for _, v in pairs(reported) do if v ~= MINE then differs = true end end end
+        return "BiggerParty " .. MINE .. (differs and "  (versions differ!)" or "")
+    end
+    BiggerPartyVersionDialog = function()
+        local pc = LocalPC()
+        if not pc then return end
+        local lines = { "You: " .. MINE }
+        if role == "client" then
+            lines[#lines + 1] = "Host: " .. (hostVersion or "not reported yet")
+        elseif role == "host" then
+            local listed = {}
+            for _, p in pairs(RemoteControllers()) do
+                local who = NameOfPC(p)
+                listed[who] = true
+                lines[#lines + 1] = who .. ": " .. (reported[who] or "not reported yet")
+            end
+            for who, v in pairs(reported) do if not listed[who] then lines[#lines + 1] = who .. ": " .. v .. " (left)" end end
+        else
+            lines[#lines + 1] = "Single player: nothing to compare."
+        end
+        Dialog(pc, "BiggerParty " .. MINE, table.concat(lines, "\n"))
+    end
+    -- the hooks only take notes (an address and a string); the tick does the rest
+    local okA, errA = pcall(function()
+        RegisterHook("/Script/Engine.PlayerController:ServerNotifyLoadedWorld", function(Context, PName)
+            local name = Str(Try(function() return PName:get() end))
+            if not (name and name:sub(1, #MARK) == MARK) then return end
+            local pc = Try(function() return Context:get() end)
+            local a = pc and Try(function() return pc:GetAddress() end)
+            if a then inbox[#inbox + 1] = { kind = "client", pc = a, version = name:sub(#MARK + 1) } end
+        end)
+    end)
+    local okB, errB = pcall(function()
+        RegisterHook("/Script/Engine.PlayerController:ClientMessage", function(Context, PS)
+            local s = Str(Try(function() return PS:get() end))
+            if s and s:sub(1, #MARK) == MARK then inbox[#inbox + 1] = { kind = "host", version = s:sub(#MARK + 1) } end
+        end)
+    end)
+    if not (okA and okB) then Out("version: hooks not registered (%s / %s)", tostring(errA), tostring(errB)) end
+    Every(1000, function()
+        local pc = LocalPC()
+        if not pc then return end
+        local ksl = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+        local gs = StaticFindObject("/Script/Engine.Default__GameplayStatics")
+        if Try(function() return ksl:IsStandalone(pc) end) then role = "single player"
+        elseif Try(function() return ksl:IsServer(pc) end) then role = "host"
+        else role = "client" end
+        local key = (Str(Try(function() return gs:GetCurrentLevelName(pc, true) end)) or "?") .. "@" .. tostring(pc:GetAddress())
+        if key ~= loadKey then loadKey, loadedAt = key, Now() end
+        local heard = inbox
+        inbox = {}
+        if role == "single player" then pending = {} return end
+        local t = Now()
+        local remote = (role == "host") and RemoteControllers() or {}
+        for _, m in ipairs(heard) do
+            if m.kind == "client" and role == "host" then
+                local p = remote[m.pc]
+                local who = p and NameOfPC(p) or "A player"
+                if reported[who] ~= m.version then Keep("version: %s has BiggerParty %s", who, m.version) end
+                reported[who] = m.version
+                if m.version ~= MINE then
+                    Warn(string.format("%s has BiggerParty %s, you (the host) have %s. Everyone in a session needs the same version.", who, m.version, MINE))
+                end
+                if p then pcall(function() p:ClientMessage(MARK .. MINE, MakeName("BiggerParty"), 0.0) end) end
+            elseif m.kind == "host" and role == "client" then
+                if hostVersion ~= m.version then Keep("version: the host has BiggerParty %s", m.version) end
+                hostVersion = m.version
+                if m.version ~= MINE then
+                    Warn(string.format("The host has BiggerParty %s, you have %s. Everyone in a session needs the same version.", m.version, MINE))
+                end
+            end
+        end
+        if role == "client" then
+            if sentKey ~= key and t - loadedAt >= 20 then
+                sentKey = key
+                local ok, err = pcall(function() pc:ServerNotifyLoadedWorld(MakeName(MARK .. MINE)) end)
+                Out("version: told the host %s (%s)", MINE, ok and "sent" or ("failed: " .. tostring(err)))
+            end
+            if not hostVersion and t - loadedAt >= SILENT then
+                Warn(string.format("The host has not reported a BiggerParty version: it has one before 1.4.13, or none. Everyone in a session needs the same version (you have %s).", MINE))
+            end
+        else
+            for a, p in pairs(remote) do
+                firstSeen[a] = firstSeen[a] or t
+                if toldKey[a] ~= key and t - math.max(firstSeen[a], loadedAt) >= 20 then
+                    toldKey[a] = key
+                    pcall(function() p:ClientMessage(MARK .. MINE, MakeName("BiggerParty"), 0.0) end)
+                end
+                local who = NameOfPC(p)
+                if reported[who] == nil and t - firstSeen[a] >= SILENT then
+                    Warn(string.format("%s has not reported a BiggerParty version: a version before 1.4.13, or none. Everyone in a session needs the same version (you have %s).", who, MINE))
+                end
+            end
+            for a in pairs(firstSeen) do if not remote[a] then firstSeen[a] = nil; toldKey[a] = nil end end
+        end
+        if #pending > 0 and Calm(pc) then Dialog(pc, "BiggerParty versions differ", table.remove(pending, 1)) end
+    end)
+end)()
+
 -- Mod options in the game's own menus. The title screen's and the pause menu's WBP_GameMenuPanel keep their buttons
 -- (WBP_GameMenuButton, a CommonUI button) in a VerticalBox named MenuOptions. A "Mod options" button of the same
 -- class goes in after Settings; clicking it swaps the menu's buttons for the mod's settings, each a button that shows
@@ -3119,6 +3297,8 @@ end)()
     local function NarratorVolume(nd) return tonumber(ReadKey(nd .. "narrator.ini", "PlaybackVolume") or "") or 100 end
     -- the settings in menu order: the label (with the value) and what a click does
     local ITEMS = {
+        { id = "version", label = function() return BiggerPartyVersionLabel and BiggerPartyVersionLabel() or ("BiggerParty " .. tostring(BIGGERPARTY_VERSION)) end,
+          click = function() if BiggerPartyVersionDialog then BiggerPartyVersionDialog() end end },
         { id = "mod", label = function() return "BiggerParty: " .. OnOff(CFG.Enabled) end, click = function() ToggleEnabled() end },
         { id = "size", label = function() return "Party size: " .. CFG.PartySize end, click = function()
             local old = CFG.PartySize

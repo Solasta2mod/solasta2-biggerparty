@@ -31,7 +31,7 @@ Uninstall: run the installer again and press **u**.
 
 | | |
 |---|---|
-| **Mod options** (title screen and pause menu, after Settings) | the mod's settings as menu buttons, each showing its value: a click changes it (the mod on/off, party size, players, enemy hit points +10% / −10%, four-hero XP, Narrator on/off and volume); **Back** returns to the menu |
+| **Mod options** (title screen and pause menu, after Settings) | the mod's version (click it to see every player's in a multiplayer session) and its settings as menu buttons, each showing its value: a click changes it (the mod on/off, party size, players, enemy hit points +10% / −10%, four-hero XP, Narrator on/off and volume); **Back** returns to the menu |
 | New Campaign | six character slots |
 | Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots start unassigned — joiners claim them, or the host takes them with the slot's assign button |
 | **Ctrl+Shift+Tab** | toggle the mod on/off (applies to the next new campaign / lobby) |
@@ -41,6 +41,10 @@ Uninstall: run the installer again and press **u**.
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
 | **Ctrl+Shift+Up / Down** | enemy hit points +10% / −10% (see below) |
 | **Ctrl+Shift+F** | party heal: re-activates the formation manager, restarts follower AI, re-selects your hero |
+
+Version check: in multiplayer every player's BiggerParty tells the host its version after each load, and the
+host answers with its own. A player on a different version, or on one that does not report (before 1.4.13, or
+no BiggerParty), gets a message in the game's information dialog, and the line goes to the history log.
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
 was only tested with 6; `EnemyHitPointsPercent=100`; `CombatExperienceAsIfFour=1`). Logs: `BiggerParty.log` (native patcher), `ue4ss\UE4SS.log` (Lua; wiped at every launch) and

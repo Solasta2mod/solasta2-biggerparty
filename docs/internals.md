@@ -289,6 +289,22 @@ must never be used again — a pause-menu click once matched a dead title-screen
 that button crashed the game. A menu's state is dropped on the tick the menu leaves the game's object list, a click
 only counts when the button is a current child of its menu, and a menu whose list was rebuilt gets the entry again.
 
+## Version check between players
+
+Every copy of the mod carries its version (`BIGGERPARTY_VERSION` at the top of the script, bumped with the
+installer's `kVersion`), and the players of a session compare theirs without any chat to carry it. A client sends
+`BiggerParty:<version>` to the host as the world name of `APlayerController::ServerNotifyLoadedWorld`, a server RPC
+the engine only acts on while that player is in the middle of a seamless level change (it compares the name with the
+world it expects; the game's override, `ABrimstonePlayerController`, only adds a log of client travel states), so it
+goes out 20 s after each load. The host hooks that call (the hook runs where the RPC is executed, with the sending
+player's controller as its object) and answers every player with its own version through
+`APlayerController::ClientMessage`, a client RPC the engine prints to the console only; the clients hook that.
+A version that differs, or a player who reports nothing within three minutes (a version before 1.4.13, or no
+BiggerParty), goes to the history log and once into the game's information dialog,
+`UBrimstoneUIBlueprintLibrary::ShowInformationDialog(WorldContext, Text, Text)` (the two texts matched to their
+parameter names), when no dialogue or world event is on screen. The hooks only note an address and a string; the
+work is done on the next tick, and controllers are looked up again among the live ones.
+
 ## Narrator: voicing the world events
 
 World events are `UWorldEventResponseScreen` widgets (`WBP_WorldEventResponseScreen`): `TitleText`, a

@@ -1,5 +1,12 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.4.13** — the version in Mod options, and a version check between players. Mod options' first row shows the
+BiggerParty version; click it to see every player's in a multiplayer session. In multiplayer, each player's
+BiggerParty tells the host its version after every load and the host answers with its own: a player whose version
+differs, or who reports none (a version before 1.4.13, or no BiggerParty), gets a message in the game's information
+dialog, and the line goes to `BiggerParty-history.log`. Everyone in a session needs the same version. The voice
+pack is unchanged (474 of the 490 passages; the rest follow in the next update).
+
 **1.4.12** — Mod options in the game's menus. The title screen and the pause menu get a **Mod options** entry
 after Settings: the mod's settings as menu buttons, each showing its value — the mod on/off, party size and
 players (for the next new campaign / hosted lobby; the players follow the party size while at its maximum),
