@@ -120,13 +120,14 @@ the game's split. Quest and world-event XP ("Each party member receives…") wer
   through a hero of theirs that the scene bound; a scene binds a fixed set of participants, so with six
   heroes a player whose heroes were all left out sees no choice and does not vote. If a player drops and
   rejoins, the game hands their heroes around; if a scene then fails to open for someone, save and reload.
-- **A turn that cannot be ended (multiplayer).** Now and then a player's End Turn does nothing. It followed
-  heroes the game dealt to one player and moved to another just after a load, so the host now hands such a
-  hero to itself and back to its player automatically, which is what cleared it by hand. If it still happens,
-  the host can do the same in the session screen (take the hero, give it back), or kick and let the player
-  rejoin, or reload. Every machine logs each party member's turn to `BiggerParty-history.log` (who that
-  machine thinks controls the hero, and what its turn panel offers); send that file from the stuck player's
-  game folder and say which hero it was.
+- **A turn that cannot be ended (multiplayer).** Now and then a player's End Turn does nothing, while the host
+  can end that turn, and handing the hero to the host and back (the session screen's take and give) clears it.
+  The mod does that by itself: the stuck player's copy notices it (End Turn clicked and the turn still running a
+  few seconds later, or half a minute of their turn with no usable End Turn) and asks the host's copy, which
+  hands the hero over and back; the host also does it for a hero the game moved from one player straight to
+  another after a load. **Mod options → Fix a stuck turn** asks for it by hand. Both the player and the host need
+  1.4.14 or later. If it still happens, kick and let the player rejoin, or reload. Every machine logs each party
+  member's turn to `BiggerParty-history.log`; send that file from the stuck player's game folder.
 - **Followers stopping (game bug).** In the current Early Access build, party followers sometimes stop
   walking after a series of leader changes. It happens with four heroes and with the mod's script idle,
   so it is the game's; **save and reload** clears it. One cause the mod does fix: the game leaves its

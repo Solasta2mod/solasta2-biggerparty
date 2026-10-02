@@ -289,6 +289,22 @@ must never be used again — a pause-menu click once matched a dead title-screen
 that button crashed the game. A menu's state is dropped on the tick the menu leaves the game's object list, a click
 only counts when the button is a current child of its menu, and a menu whose list was rebuilt gets the entry again.
 
+## Stuck turns
+
+Now and then a client cannot end their hero's turn while the host can, and handing the hero to the host and back
+(`UGameSessionViewModel::ChangeCharacterController` twice, what the session screen's take and give do) clears it.
+The hand-out repair does that unasked when the game moves a hero from one remote player straight to another; the
+character slots it needs follow the party's order, either its heroes or every member including a guest (both
+layouts are tried, each only used when every slot's controller is the game's owner of the member at that
+position). For the other cases the stuck player's own copy notices it: the turn panel's End Turn clicked
+(`UCommonButtonBase::HandleButtonClicked` on the panel's `EndTurnButton`, or `UTurnControlPanel::DoEndTurn`) and the
+same turn (round and member) still running 6 s later, or 30 s of the player's own hero's turn with the turn panel on
+screen offering neither an enabled End Turn nor Back To Active. It then asks the host over the version check's
+channel (`BiggerPartyAsk:unstick` as the world name of `ServerNotifyLoadedWorld`, which a host before 1.4.14
+ignores), once per turn; Mod options' "Fix a stuck turn" asks by hand. The host hands the hero over only when it
+is that player's hero's turn, never during a dialogue and at most once a minute per hero; the hand-back 1.5 s later
+looks the session, the slots and the hero up again by address instead of keeping them across the wait.
+
 ## Version check between players
 
 Every copy of the mod carries its version (`BIGGERPARTY_VERSION` at the top of the script, bumped with the

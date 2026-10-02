@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.4.13"
+BIGGERPARTY_VERSION = "1.4.14"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -2987,25 +2987,37 @@ end)()
     end
     local function CharacterSlot(vm, hero)
         local slots = Try(function() return vm.CharacterSlots end)
-        local party, heroes = PartyArray(), {}
+        local party, heroes, members = PartyArray(), {}, {}
         for i = 1, Count(party) do
             local m = party[i]
-            if m and m:IsValid() and HasHeroProgress(m) then heroes[#heroes + 1] = m end
-        end
-        if Count(slots) ~= #heroes then return nil, string.format("%d character slots for %d heroes", Count(slots), #heroes) end
-        local found = nil
-        for i, m in ipairs(heroes) do
-            local sl = slots[i]
-            local cp = sl and sl:IsValid() and Try(function() return sl:GetControllingPlayer() end)
-            local b = cp and cp:IsValid() and Try(function() return cp:GetBoundPlayerState() end)
-            local o = OwnerStateOf(m)
-            if not (b and b:IsValid() and o and b:GetAddress() == o:GetAddress()) then
-                return nil, string.format("slot %d does not match %s's player", i, HeroLabel(m))
+            if m and m:IsValid() then
+                members[#members + 1] = m
+                if HasHeroProgress(m) then heroes[#heroes + 1] = m end
             end
-            if m:GetAddress() == hero:GetAddress() then found = sl end
         end
-        if not found then return nil, "hero is not among the character slots" end
-        return found, nil
+        -- the slots follow the party's order: its heroes, or in some sessions every member, the guest too (2 Oct: seven
+        -- slots for six heroes and a guest). A layout is used only when every slot's controller is the game's owner of
+        -- the member at the same position
+        local why = nil
+        for _, list in ipairs({ heroes, members }) do
+            if Count(slots) == #list then
+                local found, ok = nil, true
+                for i, m in ipairs(list) do
+                    local sl = slots[i]
+                    local cp = sl and sl:IsValid() and Try(function() return sl:GetControllingPlayer() end)
+                    local b = cp and cp:IsValid() and Try(function() return cp:GetBoundPlayerState() end)
+                    local o = OwnerStateOf(m)
+                    if not (b and b:IsValid() and o and b:GetAddress() == o:GetAddress()) then
+                        ok, why = false, string.format("slot %d does not match %s's player", i, HeroLabel(m))
+                        break
+                    end
+                    if m:GetAddress() == hero:GetAddress() then found = sl end
+                end
+                if ok and found then return found, nil end
+                if ok then why = "hero is not among the character slots" end
+            end
+        end
+        return nil, why or string.format("%d character slots for %d heroes (%d party members)", Count(slots), #heroes, #members)
     end
     local function DialogueUp()
         for _, scr in ipairs(Instances("DialogueScreen")) do if Try(function() return scr:IsVisible() end) then return true end end
@@ -3024,13 +3036,43 @@ end)()
         if not (mine and theirs) then return "no player slot for the host or the player" end
         local ok, err = pcall(function() vm:ChangeCharacterController(cs, mine) end)
         if not ok then return "could not take it: " .. tostring(err) end
+        -- the hand-back looks everything up again by address: no object is kept across the wait (a level change frees them)
+        local vmA, csA, ownerA, heroA = vm:GetAddress(), cs:GetAddress(), owner:GetAddress(), hero:GetAddress()
+        local label, name = HeroLabel(hero), PlayerName(owner)
         After(1500, function()
-            local ok2, err2 = pcall(function() vm:ChangeCharacterController(cs, theirs) end)
-            local now = OwnerStateOf(hero)
-            Keep("handout: %s handed back to %s (%s; owner now %s)", HeroLabel(hero), PlayerName(owner), ok2 and "ok" or tostring(err2),
-                now and PlayerName(now) or "nobody")
+            local vm2 = SessionVM()
+            if not (vm2 and vm2:GetAddress() == vmA) then Keep("handout: %s not handed back: the session changed", label) return end
+            local slots, cs2 = Try(function() return vm2.CharacterSlots end), nil
+            for i = 1, Count(slots) do
+                local sl = slots[i]
+                if sl and sl:IsValid() and sl:GetAddress() == csA then cs2 = sl break end
+            end
+            local theirs2 = PlayerSlot(vm2, function(sl)
+                local b = Try(function() return sl:GetBoundPlayerState() end)
+                return b and b:IsValid() and b:GetAddress() == ownerA
+            end)
+            if not (cs2 and theirs2) then Keep("handout: %s not handed back: its slot or %s's is gone", label, name) return end
+            local ok2, err2 = pcall(function() vm2:ChangeCharacterController(cs2, theirs2) end)
+            local now, party = nil, PartyArray()
+            for i = 1, Count(party) do
+                local m = party[i]
+                if m and m:IsValid() and m:GetAddress() == heroA then now = OwnerStateOf(m) break end
+            end
+            Keep("handout: %s handed back to %s (%s; owner now %s)", label, name, ok2 and "ok" or tostring(err2), now and PlayerName(now) or "nobody")
         end)
         return nil
+    end
+    -- the same on request: from a player whose turn is stuck (see "Stuck turns" below), or Mod options on the host
+    BiggerPartyRehand = function(hero, owner, why)
+        if not IsHost() then return end
+        local me = LocalPlayerState()
+        if me and me:GetAddress() == owner:GetAddress() then Out("handout: %s is the host's own; the host can end its turn", HeroLabel(hero)) return end
+        local key, t = hero:GetAddress(), os.time()
+        if (done[key] or -1000) + 60 > t then Keep("handout: %s was handed over less than a minute ago; not again (%s)", HeroLabel(hero), why) return end
+        if DialogueUp() then Keep("handout: %s not handed over during a dialogue (%s)", HeroLabel(hero), why) return end
+        done[key] = t
+        local err = Rehand(hero, owner)
+        Keep("handout: %s handed to the host and back for %s (%s)%s", HeroLabel(hero), PlayerName(owner), why, err and ("; left as it is: " .. err) or "")
     end
     Every(100, function()
         if not (CFG.Enabled and IsHost()) then return end
@@ -3237,6 +3279,155 @@ end)()
     end)
 end)()
 
+-- Stuck turns (multiplayer). Now and then a player cannot end their hero's turn while the host can, and handing the
+-- hero to the host and back (the session screen's take and give) clears it. The player's own copy of the mod notices
+-- it - End Turn clicked and the same turn still running 6 s later, or 30 s of the player's own hero's turn with the
+-- turn panel on screen and no usable End Turn on it - and asks the host for that hand-over, through the channel the
+-- version check uses ("BiggerPartyAsk:unstick" as the world name of ServerNotifyLoadedWorld; a host before 1.4.14
+-- ignores it). The host checks that it is that player's hero's turn and does it (BiggerPartyRehand: never during a
+-- dialogue, at most once a minute per hero). Once per turn on its own; Mod options' "Fix a stuck turn" asks again
+-- (and on the host hands the current hero over directly). Only addresses are kept between ticks.
+-- Inside a function of its own: this chunk is at Lua's limit of 200 locals.
+;(function()
+    local ASK = "BiggerPartyAsk:unstick"
+    local inbox, endClicked, clickedButton = {}, false, nil
+    local turnKey, clickedAt, unusableSince, askedKey, lastManual = nil, nil, nil, nil, -100
+    local function Role(pc)
+        local ksl = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+        if Try(function() return ksl:IsStandalone(pc) end) then return "single player" end
+        if Try(function() return ksl:IsServer(pc) end) then return "host" end
+        return "client"
+    end
+    -- the party member whose turn it is, and a key for this turn (round and member)
+    local function ActiveHero()
+        for _, m in ipairs(Instances("TurnBasedManagerComponent")) do
+            local a = Try(function() return m.ActiveActor end)
+            if a and a.IsValid and a:IsValid() then
+                local actor = ContenderRulesetActor(a) or a
+                local party = PartyArray()
+                for i = 1, Count(party) do
+                    local p = party[i]
+                    if p and p:IsValid() and p:GetAddress() == actor:GetAddress() then
+                        return p, tostring(Try(function() return m.CurrentRound end)) .. "@" .. tostring(p:GetAddress())
+                    end
+                end
+                return nil, nil
+            end
+        end
+        return nil, nil
+    end
+    local function TurnPanel()
+        for _, p in ipairs(Instances("TurnControlPanel")) do
+            if Try(function() return p:IsVisible() end) then return p end
+        end
+        return nil
+    end
+    -- does the turn panel let this player end the turn, or go back to the hero whose turn it is?
+    local function Usable(panel)
+        local sw = Try(function() return panel.WidgetSwitcher end)
+        local g = sw and Try(function() return sw:GetActiveWidget() end)
+        local group = (g and Try(function() return g:IsValid() end)) and ShortName(g:GetFullName()) or ""
+        if group:find("BackToActive", 1, true) then return true end
+        if group:find("EndTurn", 1, true) then
+            local b = Try(function() return panel.EndTurnButton end)
+            return (b and Try(function() return b:IsValid() end) and Try(function() return b:GetIsEnabled() end)) and true or false
+        end
+        return false
+    end
+    local function Mine(hero)
+        local o, me = OwnerStateOf(hero), LocalPlayerState()
+        return (o and me and o:GetAddress() == me:GetAddress()) and true or false
+    end
+    local function Ask(pc, hero, why)
+        local n = Try(function() return FName(ASK, EFindName.FNAME_Add) end) or FName(ASK)
+        local ok, err = pcall(function() pc:ServerNotifyLoadedWorld(n) end)
+        Keep("stuck turn: asked the host to hand %s over and back (%s)%s", HeroLabel(hero), why, ok and "" or ("; failed: " .. tostring(err)))
+    end
+    -- Mod options' button: a client asks for its own hero, the host hands the current hero over itself
+    BiggerPartyUnstick = function(why)
+        local pc = UEHelpers.GetPlayerController()
+        if not (pc and pc:IsValid()) then return end
+        if os.time() - lastManual < 10 then return end
+        lastManual = os.time()
+        local hero = ActiveHero()
+        if not hero then Out("stuck turn: it is no party member's turn") return end
+        local role = Role(pc)
+        if role == "client" then
+            if Mine(hero) then Ask(pc, hero, why) else Out("stuck turn: it is %s's turn, not one of this player's heroes", HeroLabel(hero)) end
+        elseif role == "host" then
+            local o = OwnerStateOf(hero)
+            if o and BiggerPartyRehand then BiggerPartyRehand(hero, o, why) end
+        end
+    end
+    local okA, errA = pcall(function()
+        RegisterHook("/Script/Engine.PlayerController:ServerNotifyLoadedWorld", function(Context, PName)
+            if Str(Try(function() return PName:get() end)) ~= ASK then return end
+            local pc = Try(function() return Context:get() end)
+            local a = pc and Try(function() return pc:GetAddress() end)
+            if a then inbox[#inbox + 1] = a end
+        end)
+    end)
+    if not okA then Out("stuck turn: request hook not registered: %s", tostring(errA)) end
+    -- End Turn clicked: the panel's own handler, or the click on its button (whichever this game build reports)
+    pcall(function() RegisterHook("/Script/Brimstone.TurnControlPanel:DoEndTurn", function() endClicked = true end) end)
+    pcall(function()
+        RegisterHook("/Script/CommonUI.CommonButtonBase:HandleButtonClicked", function(Context)
+            local b = Try(function() return Context:get() end)
+            clickedButton = b and Try(function() return b:GetAddress() end)
+        end)
+    end)
+    Every(250, function()
+        local pc = UEHelpers.GetPlayerController()
+        if not (pc and pc:IsValid()) then return end
+        local role = Role(pc)
+        local heard = inbox
+        inbox = {}
+        if role == "host" then
+            for _, a in ipairs(heard) do
+                local from = nil
+                for _, p in ipairs(Instances("PlayerController")) do if p:GetAddress() == a then from = p break end end
+                local ps = from and Try(function() return from.PlayerState end)
+                local who = (ps and Str(Try(function() return ps:GetPlayerName() end))) or "A player"
+                local hero = ActiveHero()
+                local o = hero and OwnerStateOf(hero)
+                if hero and o and ps and o:GetAddress() == ps:GetAddress() then
+                    if BiggerPartyRehand then BiggerPartyRehand(hero, o, who .. " could not end the turn") end
+                else
+                    Keep("stuck turn: %s asked for a hand-over, but it is not their hero's turn (%s)", who, hero and HeroLabel(hero) or "no party member")
+                end
+            end
+            return
+        end
+        if role ~= "client" then endClicked, clickedButton = false, nil return end
+        local panel = TurnPanel()
+        if clickedButton then                                    -- was the click on this turn panel's End Turn?
+            local b = panel and Try(function() return panel.EndTurnButton end)
+            if b and Try(function() return b:IsValid() end) and b:GetAddress() == clickedButton then endClicked = true end
+            clickedButton = nil
+        end
+        local hero, key = ActiveHero()
+        if key ~= turnKey then turnKey, clickedAt, unusableSince = key, nil, nil end
+        if not (hero and Mine(hero)) then endClicked = false return end
+        local t = os.time()
+        if endClicked then endClicked = false; clickedAt = clickedAt or t end
+        if askedKey == key then return end                        -- one request of its own per turn
+        if clickedAt and t - clickedAt >= 6 then
+            askedKey = key
+            Ask(pc, hero, "End Turn clicked, and the turn still running 6 s later")
+        elseif not panel then
+            unusableSince = nil                                   -- a menu is open: not counted
+        elseif Usable(panel) then
+            unusableSince = nil
+        else
+            unusableSince = unusableSince or t
+            if t - unusableSince >= 30 then
+                askedKey = key
+                Ask(pc, hero, "30 s of this player's turn with no usable End Turn")
+            end
+        end
+    end)
+end)()
+
 -- Mod options in the game's own menus. The title screen's and the pause menu's WBP_GameMenuPanel keep their buttons
 -- (WBP_GameMenuButton, a CommonUI button) in a VerticalBox named MenuOptions. A "Mod options" button of the same
 -- class goes in after Settings; clicking it swaps the menu's buttons for the mod's settings, each a button that shows
@@ -3249,7 +3440,7 @@ end)()
 -- the game crashed). Inside a function of its own: this chunk is at Lua's limit of 200 locals.
 ;(function()
     local COLLAPSED = 1                               -- ESlateVisibility.Collapsed
-    local states, tries, ours, clicked = {}, {}, {}, nil   -- panel address -> state; our button address -> record
+    local states, retryAt, shownBefore, ours, clicked = {}, {}, {}, {}, nil   -- per panel address; our buttons by address
     local VOLUMES = { 100, 80, 60, 40, 20 }           -- the narrator volume a click steps down through
     local function NarratorDir()
         local p = FindIniPath()
@@ -3299,6 +3490,8 @@ end)()
     local ITEMS = {
         { id = "version", label = function() return BiggerPartyVersionLabel and BiggerPartyVersionLabel() or ("BiggerParty " .. tostring(BIGGERPARTY_VERSION)) end,
           click = function() if BiggerPartyVersionDialog then BiggerPartyVersionDialog() end end },
+        { id = "unstick", label = function() return "Fix a stuck turn" end,
+          click = function() if BiggerPartyUnstick then BiggerPartyUnstick("asked from Mod options") end end },
         { id = "mod", label = function() return "BiggerParty: " .. OnOff(CFG.Enabled) end, click = function() ToggleEnabled() end },
         { id = "size", label = function() return "Party size: " .. CFG.PartySize end, click = function()
             local old = CFG.PartySize
@@ -3384,18 +3577,24 @@ end)()
         if box and Try(function() return box:IsValid() end) then return box end
         return nil
     end
-    -- the Settings entry, by its gameplay tag (the labels are translated)
+    -- the Settings entry, by its gameplay tag (the labels are translated): UI.GameMenu.Settings, not the hosted
+    -- game's UI.GameMenu.MultiplayerSettings that can come before it
     local function SettingsEntry(panel)
         local tags = Try(function() return panel.MenuItemTags end)
+        local best, bestName = nil, nil
         for i = 1, Count(tags) do
             local tag = Try(function() return tags[i] end)
             local name = (tag and Str(Try(function() return tag.TagName end))) or ""
-            if name:lower():find("setting", 1, true) then
+            local exact = name:lower():match("%.settings$") ~= nil
+            if exact or (not best and name:lower():find("setting", 1, true)) then
                 local w = Try(function() return panel:GetMenuItemByTag(tag) end)
-                if w and Try(function() return w:IsValid() end) then return w:GetAddress(), name end
+                if w and Try(function() return w:IsValid() end) then
+                    best, bestName = w:GetAddress(), name
+                    if exact then break end
+                end
             end
         end
-        return nil, nil
+        return best, bestName
     end
     local function Forget(st)
         st.alive = false
@@ -3484,21 +3683,35 @@ end)()
         local live = {}
         for _, panel in ipairs(Instances("WBP_GameMenuPanel_C")) do live[panel:GetAddress()] = panel end
         for key, st in pairs(states) do
-            if not live[key] then Forget(st); states[key] = nil; tries[key] = nil end
+            if not live[key] then Forget(st); states[key] = nil end
         end
+        for key in pairs(retryAt) do if not live[key] then retryAt[key] = nil; shownBefore[key] = nil end end
         for key, panel in pairs(live) do
             local st = states[key]
             local box = Box(panel)
+            local visible = Try(function() return panel:IsVisible() end) and true or false
+            local kids = box and Children(box) or {}
             if st and box then
-                -- our entry must still be one of the box's children (a rebuilt list gets a new one)
-                local present = false
-                for _, c in ipairs(Children(box)) do if c.a == st.entry then present = true break end end
-                if not present then Forget(st); states[key] = nil; st = nil end
+                -- our entry must still be one of the box's children (the game rebuilds the list, e.g. when a player
+                -- joins), and shown unless the settings are: a refresh of the menu's entries may hide it
+                local entry = nil
+                for _, c in ipairs(kids) do if c.a == st.entry then entry = c.w break end end
+                if not entry then Forget(st); states[key] = nil; st = nil
+                elseif visible and not st.showing and Try(function() return entry:GetVisibility() end) == COLLAPSED then
+                    pcall(function() entry:SetVisibility(st.shown) end)
+                    Out("options: the menu hid 'Mod options'; shown again")
+                end
             end
-            if not st and box and (tries[key] or 0) < 50 then
-                tries[key] = (tries[key] or 0) + 1
+            if visible ~= (shownBefore[key] or false) then
+                shownBefore[key] = visible
+                if visible then Out("options: menu %s opened, %d entries, Mod options %s", ShortName(panel:GetFullName()), #kids, st and "in place" or "not added yet") end
+            end
+            -- a menu without the entry is tried again every second for as long as it lives: one rebuilt while hidden
+            -- stays empty until it is next opened
+            if not st and box and os.clock() >= (retryAt[key] or 0) then
+                retryAt[key] = os.clock() + 1
                 states[key] = Install(panel)
-            elseif st and box and st.showing and not Try(function() return panel:IsVisible() end) then
+            elseif st and box and st.showing and not visible then
                 ShowOptions(st, box, false)
             end
         end

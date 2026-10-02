@@ -15,7 +15,9 @@ INSTALL (one click)
 
 IN GAME
   Mod options         -> in the title screen and pause menu, after Settings: the version (click it for every
-                         player's in multiplayer), then the mod's settings as buttons showing their values (the
+                         player's in multiplayer), "Fix a stuck turn" (multiplayer: the host hands your hero to
+                         itself and back, which frees a turn you cannot end; the mod also does it by itself when
+                         End Turn does nothing), then the mod's settings as buttons showing their values (the
                          mod on/off, party size, players, enemy hit points, four-hero XP, Narrator on/off and
                          volume); a click changes one, Back returns to the menu
   Version check       -> in multiplayer, a player whose BiggerParty differs from the host's (or is older than

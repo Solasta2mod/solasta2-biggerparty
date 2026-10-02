@@ -1,5 +1,14 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.4.14** — stuck turns are freed by themselves, and two fixes for Mod options. When a player cannot end their
+hero's turn (End Turn clicked and nothing happening, or half a minute of their turn with no usable End Turn), their
+BiggerParty asks the host's, which hands the hero to itself and back — what the session screen's take and give
+did by hand. **Mod options → Fix a stuck turn** asks for it by hand. The host's automatic hand-over after a load
+now also works in sessions where the guest has a character slot of their own (it refused there before). Mod
+options now sits after Settings in a hosted game too (it went after Multiplayer Settings), and comes back after a
+player joins (the game rebuilds the pause menu then, and it stayed away). The player and the host both need 1.4.14. The voice
+pack is unchanged (474 of the 490 passages; the rest follow in the next update).
+
 **1.4.13** — the version in Mod options, and a version check between players. Mod options' first row shows the
 BiggerParty version; click it to see every player's in a multiplayer session. In multiplayer, each player's
 BiggerParty tells the host its version after every load and the host answers with its own: a player whose version
