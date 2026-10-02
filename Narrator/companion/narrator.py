@@ -1,16 +1,17 @@
-"""Narrator companion for Solasta II — speaks the lines the Narrator UE4SS mod writes to queue.txt.
+"""Narrator companion for Solasta II — plays the recorded voice pack for the lines the Narrator UE4SS mod
+writes to queue.txt.
 
-Voice: a recorded pack when one is installed (pack\\index.json + one MP3 per world-event passage, made
-with tools/render_pack.py), otherwise Microsoft Edge neural text-to-speech (free, needs internet), through
-the edge-tts package. Edge audio is cached next to this program (cache\\<hash>.mp3), so a line already heard
-plays instantly and offline. Playback uses the Windows multimedia API; nothing else is installed.
+Voice: the pack in pack\\ (index.json + one MP3 per world-event passage, made with tools/render_pack.py),
+matched to the text on screen. A line the pack has no recording of is not read. Playback uses the Windows
+multimedia API; nothing else is installed and nothing goes over the network.
 
 Files (next to SolastaNarrator.exe, in <game>\\Brimstone\\Binaries\\Win64\\Narrator\\):
   queue.txt      written by the mod: one JSON object per line ({"kind": "...", "text": "..."} or {"kind": "stop"})
-  narrator.ini   Voice=en-IE-EmilyNeural  Rate=+0%  Volume=+0%  Enabled=1  (Ctrl+Shift+N / Ctrl+Shift+M in the game, or edit and restart)
-  narrator.log   what was spoken, and any errors
+  narrator.ini   Enabled=1 (Ctrl+Shift+M in the game)  PlaybackVolume=100 (Ctrl+Shift+= / Ctrl+Shift+-)
+  pack\\         the recordings
+  narrator.log   what was played, and any errors
 """
-import asyncio, ctypes, difflib, hashlib, json, os, re, subprocess, sys, threading, time, queue
+import ctypes, difflib, json, math, os, re, struct, sys, threading, time, queue, wave
 
 HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
 QUEUE = os.path.join(HERE, "queue.txt")
@@ -28,7 +29,7 @@ def log(msg):
         pass
 
 def read_ini():
-    cfg = {"Voice": "en-IE-EmilyNeural", "Rate": "+0%", "Volume": "+0%", "Pitch": "+0Hz", "Enabled": "1", "Pack": "1"}
+    cfg = {"Enabled": "1", "PlaybackVolume": "100"}
     try:
         with open(INI, encoding="utf-8") as f:
             for line in f:
@@ -38,9 +39,26 @@ def read_ini():
                     cfg[k.strip()] = v.strip()
     except OSError:
         with open(INI, "w", encoding="utf-8") as f:
-            f.write("[Narrator]\n; Edge neural voice (en-IE-EmilyNeural, en-IE-ConnorNeural, en-GB-RyanNeural, en-GB-SoniaNeural, en-US-AndrewNeural, en-US-AvaNeural, ...)\n"
-                    "Voice=en-IE-EmilyNeural\n; speaking rate and volume, e.g. -10% or +20%\nRate=+0%\nVolume=+0%\nPitch=+0Hz\n; 0 = muted (Ctrl+Shift+M in the game toggles it)\nEnabled=1\n")
+            f.write("[Narrator]\n; 0 = muted (Ctrl+Shift+M in the game toggles it)\nEnabled=1\n"
+                    "; playback volume in percent, 10 to 100 (Ctrl+Shift+= / Ctrl+Shift+- in the game)\nPlaybackVolume=100\n")
     return cfg
+
+def chime_path():
+    """A short, soft two-note chime, made once in the cache folder: an announcement the pack has no recording
+    of (a volume key) plays it, at the playback volume, so the keys still answer."""
+    path = os.path.join(CACHE, "chime.wav")
+    if not os.path.exists(path):
+        rate, frames = 22050, bytearray()
+        for freq, dur in ((880.0, 0.12), (1318.5, 0.22)):
+            n = int(rate * dur)
+            for i in range(n):
+                env = min(1.0, i / (0.008 * rate)) * (1.0 - i / n) ** 2
+                frames += struct.pack("<h", int(9000 * env * math.sin(2 * math.pi * freq * i / rate)))
+        tmp = path + ".part"
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(bytes(frames))
+        os.replace(tmp, path)
+    return path
 
 winmm = ctypes.windll.winmm
 def mci(cmd):
@@ -56,6 +74,7 @@ class Player:
     def __init__(self):
         self.q = queue.Queue()
         self.gen = 0
+        self.level = 1000                            # MCI volume, 0..1000; applied by the worker thread
         self.lock = threading.Lock()
         threading.Thread(target=self.run, daemon=True).start()
     def play(self, path, gen):
@@ -66,6 +85,9 @@ class Player:
             while not self.q.empty():
                 try: self.q.get_nowait()
                 except queue.Empty: break
+    def set_level(self, percent):
+        """Playback volume in percent; the clip playing follows within a poll."""
+        self.level = max(0, min(100, int(percent))) * 10
     def stale(self, gen):
         with self.lock:
             return gen != self.gen
@@ -76,22 +98,19 @@ class Player:
             err, _ = mci('open "%s" type mpegvideo alias narr' % path)
             if err:
                 log("cannot open %s (mci %d)" % (path, err)); continue
+            applied = self.level
+            mci("setaudio narr volume to %d" % applied)
             mci("play narr")
             started, seen = time.time(), False
             while not self.stale(gen):               # a stop (new generation) cuts the clip here
+                if self.level != applied:            # the volume keys: the line playing follows at once
+                    applied = self.level; mci("setaudio narr volume to %d" % applied)
                 err, mode = mci("status narr mode")
                 if err: break
                 if mode == "playing": seen = True
                 elif mode == "stopped" and (seen or time.time() - started > 2): break   # finished
                 time.sleep(self.POLL)
             mci("stop narr"); mci("close narr")
-
-async def synthesize(text, cfg, path):
-    import edge_tts
-    tts = edge_tts.Communicate(text, cfg["Voice"], rate=cfg["Rate"], volume=cfg["Volume"], pitch=cfg["Pitch"])
-    tmp = path + ".part"
-    await tts.save(tmp)
-    os.replace(tmp, path)          # never leave a half-written file where the player could pick it up
 
 def running_pids(exe_name):
     """PIDs of processes with this image name, through the toolhelp snapshot (no console needed)."""
@@ -169,7 +188,7 @@ def near_start(n, text):
 class Pack:
     """Recorded world-event passages, matched by their text. A passage plays whole from its first sentence
     and the sentences after it are skipped (small wording differences allowed); when several passages open
-    alike, the next sentence decides. A sentence the recording lacks is read by the Edge voice after it."""
+    alike, the next sentence decides. A sentence the recording lacks is not read."""
     WAIT = 3.5
     GAP = 2.5          # a pause this long (a choice being made) starts a new block of text
     PROBE_WORDS = 6    # an opening still being typed starts its recording once this long and unique in the game
@@ -187,6 +206,10 @@ class Pack:
                 log("pack index unreadable: %r" % (e,))
         self.reset()
     def __len__(self): return len(self.entries)
+    def exact(self, raw):
+        """The recording of exactly this text, if the pack has one (an announcement recorded with the pack)."""
+        n = norm_text(raw)
+        return next((path for norm, path in self.entries if norm == n), None)
     def reset(self):
         self.current, self.pending, self.since, self.last = None, [], 0.0, 0.0
     def _cands(self, joined):
@@ -208,7 +231,7 @@ class Pack:
         if cands: return self._play(min(cands, key=lambda e: len(e[0])))
         return self._flush()
     def feed(self, raw, kind):
-        """Actions for one sentence: ("play", mp3, label) or ("speak", text) for the Edge voice."""
+        """Actions for one sentence: ("play", mp3, label), or ("speak", text) for a sentence with no recording."""
         out = []
         fresh = kind != self.kind or time.time() - self.last > self.GAP
         self.last = time.time()
@@ -218,7 +241,7 @@ class Pack:
         if not n: return out
         if self.current:
             if near_in(n, self.current): return out              # part of the recording that is playing
-            if not self._cands(n): return out + [("speak", raw)] # words the recording lacks: read after it
+            if not self._cands(n): return out + [("speak", raw)] # words the recording lacks: not read
             self.current = None                                  # another recorded passage begins
         if not fresh and not self.pending and len(n.split()) < 5:
             return out + [("speak", raw)]    # a short line in the middle of a block ("Here?") never starts one
@@ -251,26 +274,20 @@ def game_running():
     pids = running_pids(GAME_EXE)
     return True if pids is None else len(pids) > 0
 
-def speak_edge(text, cfg, player, gen):
-    key = hashlib.sha1((cfg["Voice"] + cfg["Rate"] + cfg["Pitch"] + "|" + text).encode("utf-8")).hexdigest()
-    path = os.path.join(CACHE, key + ".mp3")
-    if not os.path.exists(path):
-        try:
-            t0 = time.time()
-            asyncio.run(synthesize(text, cfg, path))
-            log("synthesized in %.1f s: %s" % (time.time() - t0, text[:80]))
-        except Exception as e:
-            log("synthesis failed (%s): %s" % (e, text[:80]))
-            return
+def speak(text, player, gen, pack=None, sample=False):
+    """A line with no recording is not read. An announcement (a volume key) plays its recording if the pack
+    has one, otherwise the chime."""
+    if sample:
+        rec = pack.exact(text) if pack else None
+        log(("pack: " if rec else "chime: ") + text[:80]); player.play(rec or chime_path(), gen)
     else:
-        log("cached: " + text[:80])
-    player.play(path, gen)
+        log("no recording, not read: " + text[:80])
 
-def run_action(act, cfg, player, gen):
+def run_action(act, player, gen):
     if act[0] == "play":
         log("pack: " + act[2]); player.play(act[1], gen)
     else:
-        speak_edge(act[1], cfg, player, gen)
+        speak(act[1], player, gen)
 
 def main():
     os.makedirs(CACHE, exist_ok=True)
@@ -285,12 +302,15 @@ def main():
     except Exception:
         pass
     cfg = read_ini()
-    log("started; voice %s rate %s volume %s" % (cfg["Voice"], cfg["Rate"], cfg["Volume"]))
+    log("started; playback volume %s%%" % cfg.get("PlaybackVolume", "100"))
     player = Player()
-    pack = Pack(PACK) if cfg.get("Pack", "1").strip() != "0" else None
-    if pack is not None:
-        if len(pack): log("pack: %d recorded passages" % len(pack))
-        else: pack = None
+    try:
+        player.set_level(int(cfg.get("PlaybackVolume", "100") or 100))
+    except ValueError:
+        pass
+    pack = Pack(PACK)
+    if len(pack): log("pack: %d recorded passages" % len(pack))
+    else: log("no voice pack in %s: nothing will be read" % PACK); pack = None
     # start at the end of whatever is already in the queue file
     try:
         pos = os.path.getsize(QUEUE)
@@ -324,27 +344,29 @@ def main():
                     if pack: pack.reset()
                     log("stop")
                     continue
-                if kind == "voice":            # Ctrl+Shift+N in the game: switch at once, the ini is already updated
-                    cfg["Voice"] = item.get("voice") or cfg["Voice"]
-                    player.stop(); gen = player.gen
-                    log("voice -> " + cfg["Voice"])
-                    continue
                 if kind == "mute":
                     muted = True; player.stop(); gen = player.gen; log("muted"); continue
                 if kind == "unmute":
                     muted = False; log("unmuted"); continue
+                if kind == "volume":           # Ctrl+Shift+= / - in the game; the ini is already updated
+                    try:
+                        player.set_level(int(item.get("level", 100)))
+                        log("volume -> %s%%" % item.get("level"))
+                    except (TypeError, ValueError):
+                        log("bad volume: %r" % (item.get("level"),))
+                    continue
                 if kind == "probe":            # the opening of a sentence still being typed: recordings only
                     if pack and not muted:
-                        for act in pack.probe(item.get("text") or "", item.get("for") or ""): run_action(act, cfg, player, gen)
+                        for act in pack.probe(item.get("text") or "", item.get("for") or ""): run_action(act, player, gen)
                     continue
                 text = (item.get("text") or "").strip()
                 if not text or (muted and kind != "sample"): continue
                 if pack and kind in ("description", "outcome"):
-                    for act in pack.feed(text, kind): run_action(act, cfg, player, gen)
+                    for act in pack.feed(text, kind): run_action(act, player, gen)
                     continue
-                speak_edge(text, cfg, player, gen)
+                speak(text, player, gen, pack, sample=(kind == "sample"))
         if pack:
-            for act in pack.tick(): run_action(act, cfg, player, gen)
+            for act in pack.tick(): run_action(act, player, gen)
         if time.time() - last_check > 10:
             last_check = time.time()
             if not game_running():

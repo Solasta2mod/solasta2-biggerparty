@@ -2897,20 +2897,164 @@ end)
 Keep("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift+End re-apply, Ctrl+Shift+Backspace status",
     tostring(CFG.Enabled), CFG.PartySize, iniPath or "ini not found: using defaults")
 
--- An optional extra.lua next to this script (a local add-on, not part of the release) runs last and is
--- handed the helpers below. Inside a function of its own: this chunk is at Lua's limit of 200 locals.
+-- Diagnostics for "a player cannot end their turn" in multiplayer (read-only). On every machine, each party
+-- member's turn goes to BiggerParty-history.log: who this machine thinks controls the hero, which hero this player
+-- is on, and what the turn panel offers (its group, the End Turn button); again when the same turn is still
+-- running after 45, 90, 135 and 180 s. Comparing a stuck player's lines with the host's shows whether their game
+-- disagreed about who owns the hero. Inside a function of its own: this chunk is at Lua's limit of 200 locals.
 ;(function()
-    local ini = FindIniPath()
-    local dir = (ini and ini:match("^(.*[/\\])")) or ""
-    local f = io.open(dir .. "ue4ss/Mods/BiggerParty/Scripts/extra.lua", "r")
-    if f then
-        local src = f:read("*a"); f:close()
-        local fn, err = load(src, "@extra.lua")
-        local ok = false
-        if fn then
-            ok, err = pcall(fn, { Every = Every, Try = Try, Out = Out, Instances = Instances, CFG = CFG,
-                ContenderRulesetActor = ContenderRulesetActor, HeroGivenName = HeroGivenName, GameDir = dir })
+    local last, since, repeats = nil, 0, 0
+    local function Panel()
+        for _, p in ipairs(Instances("TurnControlPanel")) do
+            if Try(function() return p:IsVisible() end) then
+                local sw = Try(function() return p.WidgetSwitcher end)
+                local g = sw and Try(function() return sw:GetActiveWidget() end)
+                local group = (g and g:IsValid()) and ShortName(g:GetFullName()) or "?"
+                local b = Try(function() return p.EndTurnButton end)
+                local on = (b and b:IsValid()) and Try(function() return b:GetIsEnabled() end)
+                local bound = Try(function() return p.GuiRulesetActor end)
+                return string.format("panel %s, End Turn %s, panel on %s", group,
+                    on == nil and "?" or (on and "enabled" or "disabled"), (bound and bound:IsValid()) and HeroLabel(bound) or "nobody")
+            end
         end
-        if not ok then Out("extra.lua: %s", tostring(err)) end
+        return "no turn panel"
     end
+    local function Describe(hero)
+        local ps = OwnerStateOf(hero)
+        local who = ps and (Str(Try(function() return ps:GetPlayerName() end)) or ShortName(ps:GetFullName())) or "nobody"
+        local mine = ps ~= nil and LocalPlayerState() ~= nil and ps:GetAddress() == LocalPlayerState():GetAddress()
+        local pc = UEHelpers.GetPlayerController()
+        local pawn = pc and pc:IsValid() and Try(function() return pc:K2_GetPawn() end)
+        local on = pawn and pawn:IsValid() and Try(function() return HeroForPawn(pawn) end)
+        return string.format("controlled by %s%s; this player is on %s; %s", who, mine and " (this player)" or "",
+            (on and on.IsValid and on:IsValid()) and HeroLabel(on) or "no hero", Panel())
+    end
+    local function PartyMember(actor)
+        local party = PartyArray()
+        for i = 1, Count(party) do
+            local m = party[i]
+            if m and m:IsValid() and m:GetAddress() == actor:GetAddress() then return m end
+        end
+        return nil
+    end
+    Every(250, function()
+        local active, round
+        for _, m in ipairs(Instances("TurnBasedManagerComponent")) do
+            local a = Try(function() return m.ActiveActor end)
+            if a and a.IsValid and a:IsValid() then active, round = a, Try(function() return m.CurrentRound end); break end
+        end
+        local key = active and active:GetAddress() or nil
+        if key ~= last then
+            last, since, repeats = key, os.time(), 0
+            local hero = active and PartyMember(ContenderRulesetActor(active) or active)
+            if hero then Keep("turn: %s (round %s) %s", HeroLabel(hero), tostring(round), Describe(hero)) end
+        elseif active and repeats < 4 and os.time() - since >= 45 * (repeats + 1) then
+            repeats = repeats + 1
+            local hero = PartyMember(ContenderRulesetActor(active) or active)
+            if hero then Keep("turn: %s still running after %d s; %s", HeroLabel(hero), os.time() - since, Describe(hero)) end
+        end
+    end)
+end)()
+
+-- Hand-out repair (host). After a load the game sometimes deals a hero to one player and moves it to another a
+-- moment later; that hero's new player can then be unable to end its turn, while the host can. Handing the hero to
+-- the host and back to its player, as the session screen does, clears it. So when a hero moves from one remote
+-- player straight to another and then stays put for 3 s, the host does exactly that, once per hero per 90 s and
+-- never during a dialogue. The session's character slots follow the party's hero order; that is trusted only
+-- when every slot's controller matches the game's owner of the hero at the same position, otherwise nothing is
+-- touched. Inside a function of its own: this chunk is at Lua's limit of 200 locals.
+;(function()
+    local seen, moved, done = {}, {}, {}
+    local function PlayerName(ps)
+        return Str(Try(function() return ps:GetPlayerName() end)) or ShortName(ps:GetFullName())
+    end
+    local function SessionVM()
+        for _, vm in ipairs(Instances("GameSessionViewModel")) do
+            if Count(Try(function() return vm.PlayerSlots end)) > 0 and Count(Try(function() return vm.CharacterSlots end)) > 0 then return vm end
+        end
+        return nil
+    end
+    local function PlayerSlot(vm, test)
+        local slots = Try(function() return vm.PlayerSlots end)
+        for i = 1, Count(slots) do
+            local sl = slots[i]
+            if sl and sl:IsValid() and test(sl) then return sl end
+        end
+        return nil
+    end
+    local function CharacterSlot(vm, hero)
+        local slots = Try(function() return vm.CharacterSlots end)
+        local party, heroes = PartyArray(), {}
+        for i = 1, Count(party) do
+            local m = party[i]
+            if m and m:IsValid() and HasHeroProgress(m) then heroes[#heroes + 1] = m end
+        end
+        if Count(slots) ~= #heroes then return nil, string.format("%d character slots for %d heroes", Count(slots), #heroes) end
+        local found = nil
+        for i, m in ipairs(heroes) do
+            local sl = slots[i]
+            local cp = sl and sl:IsValid() and Try(function() return sl:GetControllingPlayer() end)
+            local b = cp and cp:IsValid() and Try(function() return cp:GetBoundPlayerState() end)
+            local o = OwnerStateOf(m)
+            if not (b and b:IsValid() and o and b:GetAddress() == o:GetAddress()) then
+                return nil, string.format("slot %d does not match %s's player", i, HeroLabel(m))
+            end
+            if m:GetAddress() == hero:GetAddress() then found = sl end
+        end
+        if not found then return nil, "hero is not among the character slots" end
+        return found, nil
+    end
+    local function DialogueUp()
+        for _, scr in ipairs(Instances("DialogueScreen")) do if Try(function() return scr:IsVisible() end) then return true end end
+        return false
+    end
+    local function Rehand(hero, owner)
+        local vm = SessionVM()
+        if not vm then return "no session view model" end
+        local cs, why = CharacterSlot(vm, hero)
+        if not cs then return why end
+        local mine = PlayerSlot(vm, function(sl) return Try(function() return sl:GetIsMySlot() end) end)
+        local theirs = PlayerSlot(vm, function(sl)
+            local b = Try(function() return sl:GetBoundPlayerState() end)
+            return b and b:IsValid() and b:GetAddress() == owner:GetAddress()
+        end)
+        if not (mine and theirs) then return "no player slot for the host or the player" end
+        local ok, err = pcall(function() vm:ChangeCharacterController(cs, mine) end)
+        if not ok then return "could not take it: " .. tostring(err) end
+        After(1500, function()
+            local ok2, err2 = pcall(function() vm:ChangeCharacterController(cs, theirs) end)
+            local now = OwnerStateOf(hero)
+            Keep("handout: %s handed back to %s (%s; owner now %s)", HeroLabel(hero), PlayerName(owner), ok2 and "ok" or tostring(err2),
+                now and PlayerName(now) or "nobody")
+        end)
+        return nil
+    end
+    Every(100, function()
+        if not (CFG.Enabled and IsHost()) then return end
+        local me = LocalPlayerState()
+        if not (me and me:IsValid()) then return end
+        local host, t = me:GetAddress(), os.time()
+        local party = PartyArray()
+        for i = 1, Count(party) do
+            local m = party[i]
+            if m and m:IsValid() then
+                local key = m:GetAddress()
+                local o = OwnerStateOf(m)
+                local cur = o and o:GetAddress() or 0
+                if seen[key] ~= nil and seen[key] ~= cur then
+                    -- straight from one remote player to another: remember when, and from whom
+                    if seen[key] ~= 0 and seen[key] ~= host and cur ~= 0 and cur ~= host then
+                        moved[key] = { at = t, from = seen[key] } else moved[key] = nil end
+                end
+                seen[key] = cur
+                local mv = moved[key]
+                if mv and t - mv.at >= 3 and (done[key] or -1000) + 90 <= t and not DialogueUp() then
+                    moved[key], done[key] = nil, t
+                    local why = Rehand(m, o)
+                    Keep("handout: %s went from one player straight to %s; %s", HeroLabel(m), PlayerName(o),
+                        why and ("left as it is: " .. why) or "re-handing it through the host (clears a turn its player cannot end)")
+                end
+            end
+        end
+    end)
 end)()

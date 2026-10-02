@@ -88,6 +88,24 @@ The first real three-player session (two heroes each) showed where single-player
 - **Hot-reload traces.** `trace:` lines on `BeforePushDialogueScreen` / `AfterPushDialogueScreen` and the
   `DialogueScreen` start/bind functions show the game's own screen push relative to the mod's possession.
   Do not trace `OnPossessedPawnChanged`: every participant component in the level receives it.
+- **Turns that cannot be ended.** Sometimes a player's End Turn does nothing until they are kicked and
+  rejoin, or the game is reloaded. Whose turn it is lives in `UTurnBasedManagerComponent::ActiveActor`
+  (replicated, `OnRep_ActiveActor`); a player's End Turn sits in `UTurnControlPanel`, whose `WidgetSwitcher`
+  shows `EndTurnGroup`, `BackToActiveGroup`, `NextPlayableCharacterGroup` or `EmptyGroup`, with
+  `EndTurnButton` and the hero the panel is on (`GuiRulesetActor`). On every machine the script writes each
+  party member's turn to `BiggerParty-history.log` with the controlling player as that machine sees it, the
+  hero its player is on and the panel's state, again 45, 90, 135 and 180 s into the same turn. A stuck
+  player's own hero holding the turn while their panel shows anything but an enabled End Turn would mean
+  their game disagrees about whose turn it is; their lines next to the host's show which side drifted.
+  The stuck heroes had been dealt to one player and moved to another a moment after a load, and handing such
+  a hero to the host and back cleared it. The host now does that itself: it watches every party member's
+  controlling player state ten times a second, and a hero that moves straight from one remote player to
+  another, then stays put for 3 s, is handed over with `UGameSessionViewModel::ChangeCharacterController
+  (UCharacterSlotViewModel*, UPlayerSlotViewModel*)` — first to the host's slot (`GetIsMySlot`), 1.5 s later
+  back to the slot whose `GetBoundPlayerState` is its player. The view model's `CharacterSlots` follow the
+  party's hero order; that is used only when every slot's `GetControllingPlayer` agrees with
+  `FindPlayerStateControllingActor` for the hero at the same position. Guests have no character slot and are
+  left alone; nothing happens during a dialogue, and a hero is handed over at most once every 90 s.
 
 ## Followers that stop walking (not fixed)
 
@@ -260,46 +278,50 @@ screen's `Bind` / `AddOutcomeMessage` / `ShowResponses` never fire (called from 
 visible screen every 250 ms on the game thread instead.
 
 The description is streamed as *sentences*: the text seen so far is split at `.!?` followed by a space and
-each complete sentence is spoken once it is there; the remainder is spoken once the text has been stable
-for four polls (the typewriter finished). Outcome blocks are stripped of the icon tag, the styled label of
-the chosen option, and any leading short label block; reward lines ("Each party member receives 125 XP",
-"… gold", "treasury") are dropped by pattern. Titles, options and tooltips are never spoken. Closing the
-screen writes a stop. A new outcome block that reaches five words of non-reward text means an option was
-chosen: a stop is written first and whatever the earlier blocks still had to say is dropped, so the
-narration moves straight on (the five-word threshold keeps a reward line that is still typing out from
-counting). While a block's first sentence is still being typed, its opening also goes out as a `probe`
-every two words from six on, so that a recorded passage (below) can start before the sentence is finished;
-the companion never speaks a probe.
+each complete sentence is sent once it is there; the remainder is sent once the text has been stable for
+four polls (the typewriter finished). Outcome blocks are stripped of the icon tag, the styled label of the
+chosen option, and any leading short label block. The game puts an icon in front of each outcome block:
+`WorldEventChoice` on the outcome of a chosen option, an icon of its own (`HeroicInspiration`, …) on a
+reward line, which is dropped; a block without an icon is dropped as a reward by pattern ("Each party member
+receives 125 XP", "… gold", "treasury"). Titles, options and tooltips are never sent. Closing the screen
+writes a stop. A new block with the choice icon means an option was chosen: a stop is written before any of
+its text, and whatever the earlier blocks still had to say is dropped, so the narration moves straight on.
+A block without an icon counts once it reaches five words of non-reward text (so a reward line still typing
+out does not), and is held back until then or until it has finished typing, so that the stop never cuts its
+own first sentence. While a block's first sentence is still being typed, its opening also goes out as a
+`probe` every two words from six on, so that its recording can start before the sentence is finished.
 
-Speech is done out of process: the mod appends one JSON line per utterance to
-`Narrator\queue.txt` next to the game exe and starts `Narrator\SolastaNarrator.exe` once (single-instance lock;
-it polls for the game process and exits when it is gone). The companion is a small Python program
-(`Narrator/companion/narrator.py`, packaged with PyInstaller): it synthesizes with `edge-tts`
-(Microsoft Edge's neural voices, free, online), caches MP3s by `sha1(voice + rate + pitch + text)` and plays
-them through `winmm` MCI from one worker thread. An MCI device belongs to the thread that opened it — a
-`stop` sent from any other thread fails (error 263) and the clip plays on — so the worker opens, plays
-without waiting, polls `status … mode` every 100 ms and closes each clip itself; a stop only empties the
-queue and bumps a generation counter, which the worker sees and cuts the clip on. Queue commands: `voice`
-(switch at once), `mute` / `unmute`, `stop`, `probe`; `sample` lines play even when muted (the voice
-introducing itself).
-`Ctrl+Shift+N` / `Ctrl+Shift+M` are key binds that only set flags, polled on the game thread; the choice is
-written to `narrator.ini`, which the companion also reads at start-up.
+Playback is out of process: the mod appends one JSON line per sentence to `Narrator\queue.txt` next to the
+game exe and starts `Narrator\SolastaNarrator.exe` once (single-instance lock; it polls for the game process
+and exits when it is gone). The companion (`Narrator/companion/narrator.py`, packaged with PyInstaller) plays
+the recordings through `winmm` MCI from one worker thread. An MCI device belongs to the thread that opened
+it — a `stop` sent from any other thread fails (error 263) and the clip plays on — so the worker opens,
+plays without waiting, polls `status … mode` every 100 ms and closes each clip itself; a stop only empties
+the queue and bumps a generation counter, which the worker sees and cuts the clip on. Queue commands:
+`mute` / `unmute`, `stop`, `probe`, `volume` (playback level, applied by the worker with `setaudio … volume`
+to the clip playing too); `sample` lines (announcements: the volume keys, BiggerParty's enemy hit points)
+play even when muted — the pack's recording of that exact text if it has one, a short chime otherwise.
+`Ctrl+Shift+M` and `Ctrl+Shift+= / -` are key binds that only set flags, polled on the game thread; the
+values are written to `narrator.ini`, which the companion reads at start-up. A PyInstaller one-file program
+reads its embedded modules from its own file at each first import, so the companion must never be replaced
+while it runs (the installer stops it first).
 
-**Voice packs.** All the event text is in the pak (`ST_MainCampaignIngredients.csv`, keys `DA_EV_*`; 131
-events, 490 passages, ~88k characters, ≈100 minutes) and `Narrator/tools/extract_events.py` pulls it from
-your own copy of the game. A pack is `Narrator\pack\index.json` — `passages` (key, normalised text, MP3
-file) and `all` (the normalised text of every passage, recorded or not) — plus one MP3 per passage. The
-companion matches what the screen shows to a passage by its normalised text (lower-case letters and
-digits, single spaces): a passage plays whole from its opening and the sentences after it are skipped,
-allowing a word or two to differ, because patches reword lines; when several passages open alike, the next
-sentence decides; a typed opening (`probe`) starts its passage once it is at least six words long and no
-other passage in the game begins that way, which is what `all` is for; a line of under five words in the
-middle of a block never starts a recording (a block starts with a new screen, a stop, or a pause of over
-2.5 s); anything the pack lacks goes to Edge, after the recording. `Narrator/tools/render_pack.py` records
-a pack with Gemini TTS — one designed voice per speaker, narration and quoted speech split by
-`cast_split.py`, `gemini_tts.py` as the API client — from a cast file made from the extracted text,
-pacing itself to the API's request limits and resuming where it stopped. The extracted text, the cast and
-any pack stay out of the repository: they are the game's text.
+**The voice pack.** All the event text is in the pak (`ST_MainCampaignIngredients.csv`, keys `DA_EV_*`;
+131 events, 490 passages, ~88k characters, ≈100 minutes), and what the game displays is the English locres,
+which corrects the CSV in places; `Narrator/tools/extract_events.py` pulls the displayed text from your own
+copy of the game. A pack is `Narrator\pack\index.json` — `passages` (key, normalised text, MP3 file) and
+`all` (the normalised text of every passage, recorded or not) — plus one MP3 per passage. The companion
+matches what the screen shows to a passage by its normalised text (lower-case letters and digits, single
+spaces): a passage plays whole from its opening and the sentences after it are skipped, allowing a word or
+two to differ, because patches reword lines; when several passages open alike, the next sentence decides; a
+typed opening (`probe`) starts its passage once it is at least six words long and no other passage in the
+game begins that way, which is what `all` is for; a line of under five words in the middle of a block never
+starts a recording (a block starts with a new screen, a stop, or a pause of over 2.5 s); anything without a
+recording is not read. `Narrator/tools/render_pack.py` records a pack with Gemini TTS — one designed voice
+per speaker, narration and quoted speech split by `cast_split.py`, `gemini_tts.py` as the API client — from
+a cast file made from the extracted text, pacing itself to the API's request limits and resuming where it
+stopped. The extracted text, the cast and the recordings stay out of the repository (they are the game's
+text); the recordings ship inside the release's installer.
 
 ## Re-signing after a game patch
 

@@ -24,10 +24,11 @@ __pycache__/
 
 # private working notes, kept outside the repo
 docs-workspace-notes.md
-# private add-ons for local builds only (gen_payload.py picks them up when present)
+# local build inputs (the UE4SS release the installer embeds), kept out of the repository
 BiggerParty/private/
 
-# game text pulled from the paks for the narration pack, and the rendered audio — never publish
+# game text pulled from the paks for the narration pack, and the rendered audio: never in the repository
+# (the recordings ship inside the release's installer)
 Narrator/text/
 Narrator/pack/
 Narrator/companion/dist/

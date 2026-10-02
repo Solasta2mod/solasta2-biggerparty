@@ -2,12 +2,12 @@
 --
 -- World events are text only. This mod reads the event's story text as the game types it out and hands
 -- each completed sentence to a companion program (Narrator/SolastaNarrator.exe next to the game exe) through a
--- queue file (Narrator/queue.txt, one JSON line per utterance). The companion speaks the lines with a
--- Microsoft Edge neural voice and caches the audio. Titles, options, the choice made and the rewards are
--- deliberately not narrated.
+-- queue file (Narrator/queue.txt, one JSON line per utterance). The companion plays the recorded voice pack
+-- (Narrator/pack) for them; a line without a recording is not read. Titles, options, the choice made and the
+-- rewards are deliberately not narrated.
 --
---   Ctrl+Shift+N   next voice (saved to Narrator/narrator.ini; the new voice introduces itself)
---   Ctrl+Shift+M   mute / unmute
+--   Ctrl+Shift+M        mute / unmute (saved to Narrator/narrator.ini)
+--   Ctrl+Shift+= / -    volume up / down
 --
 -- Everything runs on the game thread (see BiggerParty's docs/internals.md on UE4SS threads).
 
@@ -78,7 +78,7 @@ local RESULT_WORDS = { "Ability Check Success", "Ability Check Failure", "Group 
     "Critical Success", "Critical Failure", "Auto Success", "Success", "Failure", "Failed", "Fail" }
 local function IsReward(text)
     local t = text:lower()
-    if t:match("^each party member") or t:match("^the party ") or t:match("^your party ") then return true end
+    if t:match("^each party member") or t:match("^the party ") or t:match("^the whole party ") or t:match("^your party ") then return true end
     if t:match("%d+%s*xp") or t:match("%(×%d+%)") or t:match("%(x%d+%)") then return true end
     if t:match(" gold%.?$") or t:match(" gold pieces") or t:match("treasury") then return true end
     if t:match("^[%w' ]- gains ") or t:match("^[%w' ]- loses ") or t:match("^[%w' ]- receives ") or t:match("^[%w' ]- learns ") then return true end
@@ -174,12 +174,13 @@ local function SplitSentences(text)
     end
     return pieces, text:sub(pos)                          -- complete sentences, and the tail still being typed
 end
-local function ConsiderStream(slot, kind, text, markup)
+local function ConsiderStream(slot, kind, text, markup, hold)
     if not text or text == "" then return end
     local st = STREAMS[slot]
     if not st then st = { last = "", stable = 0, spoken = {}, done = false }; STREAMS[slot] = st end
     if st.muted then return end                       -- an option was chosen since: this text is left behind
     if text == st.last then st.stable = st.stable + 1 else st.last = text; st.stable = 1 end
+    if hold and st.stable < STABLE_POLLS then return end   -- not yet known to follow a choice (see Poll): wait
     local pieces, tail = SplitSentences(text)
     -- while the first sentence is still being typed, its opening goes out every couple of words: a recorded
     -- passage that is the only one in the game starting that way can begin before the sentence is finished
@@ -223,6 +224,9 @@ local function Poll()
         for i, line in ipairs(Children(oc)) do
             local t = {}
             RawTexts(line, t)
+            -- the game puts an icon in front of each line: WorldEventChoice on the outcome of a chosen option,
+            -- its own icon on a reward line (HeroicInspiration, ...)
+            local icon = table.concat(t, " "):match('<img id="([^"]*)"')
             -- the chosen option's label: its own short block in front of the message, or a styled run at the start
             if #t >= 2 then
                 local first = t[1]:gsub("<[^>]->", ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -244,17 +248,20 @@ local function Poll()
             for _, word in ipairs(RESULT_WORDS) do
                 text = text:gsub("^" .. word .. "[%s:!%.%-]+(%u)", "%1")
             end
-            if text ~= "" and not IsReward(text) then
+            local reward = (icon and icon ~= "WorldEventChoice") or IsReward(text)
+            if text ~= "" and not reward then
                 local slot = "outcome" .. i
                 -- a new outcome line follows a click on an option: whatever is still being read stops and the
-                -- narration moves on to it. It counts once it has five words, so a reward line typing out never does
-                if not CHOSEN[slot] and select(2, text:gsub("%S+", "")) >= 5 then
+                -- narration moves on to it, before a word of it is read. A line with the choice icon counts at
+                -- once; one without an icon once it has five words (a reward line typing out never does), and
+                -- it is held back until then, so that the stop cannot cut its own first sentence
+                if not CHOSEN[slot] and (icon == "WorldEventChoice" or select(2, text:gsub("%S+", "")) >= 5) then
                     CHOSEN[slot] = true
                     Stop()
                     for s, st in pairs(STREAMS) do if s ~= slot then st.muted = true end end
                     Out("option chosen: narration moves on to outcome %d", i)
                 end
-                ConsiderStream(slot, "outcome", text, markup)
+                ConsiderStream(slot, "outcome", text, markup, not CHOSEN[slot])
             end
         end
     end
@@ -265,18 +272,8 @@ else
     LoopAsync(250, function() ExecuteInGameThread(function() pcall(Poll) end) return false end)
 end
 
--- Voice choice and mute, from the keyboard. The choice is written to narrator.ini (next to the companion) and
--- pushed to the running companion, which introduces the new voice in its own words.
-local VOICES = {                -- the first is the default
-    { "en-IE-EmilyNeural", "Emily, Irish English" }, { "en-IE-ConnorNeural", "Connor, Irish English" },
-    { "en-GB-RyanNeural", "Ryan, British English" }, { "en-GB-ThomasNeural", "Thomas, British English" },
-    { "en-GB-SoniaNeural", "Sonia, British English" }, { "en-GB-LibbyNeural", "Libby, British English" },
-    { "en-AU-WilliamNeural", "William, Australian English" }, { "en-AU-NatashaNeural", "Natasha, Australian English" },
-    { "en-US-AndrewNeural", "Andrew, American English" }, { "en-US-BrianNeural", "Brian, American English" },
-    { "en-US-ChristopherNeural", "Christopher, American English" }, { "en-US-GuyNeural", "Guy, American English" },
-    { "en-US-AvaNeural", "Ava, American English" }, { "en-US-AriaNeural", "Aria, American English" },
-    { "en-US-JennyNeural", "Jenny, American English" },
-}
+-- Mute and volume, from the keyboard: written to narrator.ini (next to the companion) and pushed to the
+-- running companion.
 local function IniPath() return QueuePath():gsub("queue%.txt$", "narrator.ini") end
 local function ReadIniValue(key)
     local f = io.open(IniPath(), "r")
@@ -308,18 +305,6 @@ local function Command(kind, extra)
     local f = io.open(QueuePath(), "a")
     if f then f:write(string.format('{"kind":"%s"%s}\n', kind, extra or "")); f:close() end
 end
-local function NextVoice()
-    local current = ReadIniValue("Voice") or VOICES[1][1]
-    local idx = 1
-    for i, v in ipairs(VOICES) do if v[1] == current then idx = i break end end
-    local nxt = VOICES[idx % #VOICES + 1]
-    WriteIniValue("Voice", nxt[1])
-    Command("voice", string.format(',"voice":"%s"', nxt[1]))
-    SEQ = SEQ + 1
-    local f = io.open(QueuePath(), "a")
-    if f then f:write(string.format('{"seq":%d,"kind":"sample","text":"This is %s. I will narrate the world events."}\n', SEQ, nxt[2])); f:close() end
-    Out("voice: %s (%s)", nxt[2], nxt[1])
-end
 local MUTED = (ReadIniValue("Enabled") == "0")
 local function ToggleMute()
     MUTED = not MUTED
@@ -327,13 +312,29 @@ local function ToggleMute()
     Command(MUTED and "mute" or "unmute")
     Out("narration %s", MUTED and "muted" or "on")
 end
-local PRESSED = { voice = false, mute = false }
-RegisterKeyBind(Key.N, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.voice = true end)
+-- playback volume, 10 to 100 %, kept in narrator.ini; the companion applies it to the line playing at once and
+-- answers with the announcement's recording, or a chime
+local function ChangeVolume(delta)
+    local cur = tonumber(ReadIniValue("PlaybackVolume") or "") or 100
+    local new = math.max(10, math.min(100, math.floor(cur + delta + 0.5)))
+    WriteIniValue("PlaybackVolume", tostring(new))
+    Command("volume", string.format(',"level":%d', new))
+    SEQ = SEQ + 1
+    local f = io.open(QueuePath(), "a")
+    if f then f:write(string.format('{"seq":%d,"kind":"sample","text":"Narrator volume, %d percent."}\n', SEQ, new)); f:close() end
+    Out("volume: %d%%", new)
+end
+local PRESSED = { mute = false, louder = false, quieter = false }
 RegisterKeyBind(Key.M, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.mute = true end)
+if Key.OEM_PLUS and Key.OEM_MINUS then                   -- the = and - keys
+    RegisterKeyBind(Key.OEM_PLUS, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.louder = true end)
+    RegisterKeyBind(Key.OEM_MINUS, { ModifierKey.CONTROL, ModifierKey.SHIFT }, function() PRESSED.quieter = true end)
+end
 if LoopInGameThreadWithDelay then
     LoopInGameThreadWithDelay(50, function()
-        if PRESSED.voice then PRESSED.voice = false; pcall(NextVoice) end
         if PRESSED.mute then PRESSED.mute = false; pcall(ToggleMute) end
+        if PRESSED.louder then PRESSED.louder = false; pcall(ChangeVolume, 10) end
+        if PRESSED.quieter then PRESSED.quieter = false; pcall(ChangeVolume, -10) end
     end)
 end
 
@@ -350,4 +351,4 @@ local function StartCompanion()
 end
 pcall(StartCompanion)
 
-Out("loaded — narrating world events (Ctrl+Shift+N next voice, Ctrl+Shift+M mute); queue %s", QueuePath())
+Out("loaded — narrating world events (Ctrl+Shift+M mute, Ctrl+Shift+= / - volume); queue %s", QueuePath())

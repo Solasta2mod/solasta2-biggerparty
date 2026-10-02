@@ -1,5 +1,25 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.4.11** — the Narrator speaks with recorded voices; a diagnostic and a repair for multiplayer turns.
+The Narrator now reads world events with a full recorded cast — a narrator, and a voice of its own for each
+character who speaks — made with Google's Gemini text-to-speech from the game's own text: 474 of the 490
+passages so far; the last 16 (silent until then) and new takes of 10 that the game words slightly
+differently follow in the next update. Microsoft Edge's online voices are gone, and with them the need for an internet connection and the
+voice-switching key. The installer now installs the Narrator by default (**n** in its menu leaves it out).
+**Ctrl+Shift+=** / **Ctrl+Shift+-** turn the narration up or down in 10% steps (10–100%, saved as
+`PlaybackVolume` in `narrator.ini`; a chime plays at the new level, and the line playing follows at once).
+Picking an option no longer cuts the start of its own outcome (a short first sentence used to be stopped
+along with the narration before it), and a reward line no longer interrupts the outcome it follows: both are
+now told apart by the icon the game puts in front of each line. For the occasional multiplayer turn a player cannot end (kicking that player and letting them rejoin, or reloading, frees it):
+every machine now writes each party member's turn to `BiggerParty-history.log` — who that machine thinks
+controls the hero, which hero its player is on, and what its turn panel offers — and again if the turn is
+still running after 45 s. If it happens, send that file from the stuck player's game folder and say which
+hero it was. The host also repairs what looks like the cause: after a load the game sometimes deals a hero
+to one player and moves it to another a moment later, and that hero's player could then not end its turn,
+while handing the hero to the host and back (the session screen's take and give) cleared it. The host now
+does that by itself, 3 s after such a move, and logs it as a `handout:` line. Everyone should update, so
+that every machine keeps the turn lines; the repair itself only needs the host's copy.
+
 **1.4.10** — Narrator improvements; the party mod itself is unchanged. Picking an option now moves the
 narration straight on to the outcome, and closing a world event (or muting) stops the voice at once:
 before, a stop let the line already playing finish. The Narrator can also play a recorded voice pack: if

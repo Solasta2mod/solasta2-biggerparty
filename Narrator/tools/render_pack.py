@@ -192,30 +192,43 @@ def to_mp3(wav_bytes, kbps=64):
     enc.set_bit_rate(kbps); enc.set_in_sample_rate(rate); enc.set_channels(ch); enc.set_quality(2)
     return bytes(enc.encode(pcm) + enc.flush())
 
-def write_index(folder, index, cast):
-    """index.json for the companion: the recorded passages, plus every passage's text ("all"), so that it can
-    tell when an opening still being typed can only be one passage in the game."""
-    data = {"format": 1, "passages": index, "all": sorted({norm_text(p["text"]) for p in cast["passages"]})}
-    json.dump(data, open(os.path.join(folder, "index.json"), "w", encoding="utf-8"))
+def pack_name(n):
+    """The recording's file name: a hash of the passage's normalised text."""
+    return hashlib.sha1(n.encode("utf-8")).hexdigest()[:16] + ".mp3"
+
+def write_index(folder, cast):
+    """index.json for the companion: every passage whose recording is in the folder, plus every passage's text
+    ("all"), so that it can tell when an opening still being typed can only be one passage in the game. It is
+    made from the folder, not from the passages a run got through: a run cut short (the daily limit) must still
+    list what earlier days recorded further on. Returns the number of recorded passages."""
+    passages = []
+    for p in cast["passages"]:
+        n = norm_text(p["text"])
+        if os.path.exists(os.path.join(folder, pack_name(n))): passages.append({"key": p["key"], "norm": n, "file": pack_name(n)})
+    data = {"format": 1, "passages": passages, "all": sorted({norm_text(p["text"]) for p in cast["passages"]})}
+    path = os.path.join(folder, "index.json")
+    with open(path + ".part", "w", encoding="utf-8") as f: json.dump(data, f)
+    os.replace(path + ".part", path)
+    return len(passages)
 
 def build_pack(cast, voices, folder, only=None, deadline=None):
     """Render passages into <folder>/<hash>.mp3 and write <folder>/index.json for the companion.
     Returns True when every chosen passage is recorded."""
     os.makedirs(folder, exist_ok=True)
-    index, t0, done = [], time.time(), 0
+    t0, n = time.time(), 0
     try:
-        complete = _pack_passages(cast, voices, folder, only, index, t0, deadline)
-    finally:                                  # whatever happens, the index lists what is recorded
-        write_index(folder, index, cast)
-    print("pack: %d passages in %s" % (len(index), folder))
+        complete = _pack_passages(cast, voices, folder, only, t0, deadline)
+    finally:                                  # whatever happens, the index lists every recording in the folder
+        n = write_index(folder, cast)
+    print("pack: %d passages in %s" % (n, folder))
     return complete
 
-def _pack_passages(cast, voices, folder, only, index, t0, deadline=None):
+def _pack_passages(cast, voices, folder, only, t0, deadline=None):
     done, complete = 0, True
     for p in cast["passages"]:
         if only and p["key"] not in only: continue
         n = norm_text(p["text"])
-        name = hashlib.sha1(n.encode("utf-8")).hexdigest()[:16] + ".mp3"
+        name = pack_name(n)
         path = os.path.join(folder, name)
         if not os.path.exists(path) and deadline and time.time() > deadline:
             complete = False; continue                 # time is up: the rest stays for the next burst
@@ -227,11 +240,10 @@ def _pack_passages(cast, voices, folder, only, index, t0, deadline=None):
                 LAST_ERROR[0] = "%s: %s" % (p["key"], e)
                 print("  %s FAILED: %s" % (p["key"], e)); complete = False; continue
             open(path + ".part", "wb").write(mp3); os.replace(path + ".part", path)
-        index.append({"key": p["key"], "norm": n, "file": name})
         done += 1
         if done % 10 == 0:
             print("  %d/%d passages (%.0f min)" % (done, len(cast["passages"]), (time.time() - t0) / 60))
-            write_index(folder, index, cast)
+            write_index(folder, cast)
     return complete
 
 def cached_only(text, voice, style):

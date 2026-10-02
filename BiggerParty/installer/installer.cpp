@@ -1,11 +1,11 @@
 // BiggerParty installer for Solasta II — self-contained console installer.
 //
 // Carries UE4SS (experimental build for UE 5.6), the BiggerParty mod (version.dll patcher + Lua) and the
-// optional GiveSpellbook and Narrator mods as embedded resources. Finds the game through Steam, checks
-// that the game build still has the four patch sites, installs / updates / uninstalls, and edits UE4SS's
-// mod list.
+// Narrator (with its recorded voice pack) and the optional GiveSpellbook mod as embedded resources. Finds the
+// game through Steam, checks that the game build still has the four patch sites, installs / updates /
+// uninstalls, and edits UE4SS's mod list.
 //
-// Usage: double-click. Command line: BiggerParty-Installer.exe [/install|/uninstall] [/spellbook] [/narrator] [/game "<Solasta 2 folder>"] [/silent]
+// Usage: double-click. Command line: BiggerParty-Installer.exe [/install|/uninstall] [/spellbook] [/nonarrator] [/game "<Solasta 2 folder>"] [/silent]
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -29,7 +29,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.4.10 (game builds CL-112340 / CL-112436 / CL-113670)";
+static const wchar_t* kVersion = L"BiggerParty 1.4.11 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
@@ -306,6 +306,19 @@ static bool WriteMods(const std::wstring& modsDir, std::vector<ModEntry> mods)
 }
 
 // ------------------------------------------------------------------------------------------------
+static bool PayloadHasKind(int kind)
+{
+    for (int i = 0; i < kPayloadCount; ++i) if (kPayload[i].kind == kind) return true;
+    return false;
+}
+
+static bool PayloadHasFolder(const wchar_t* prefix)
+{
+    size_t n = wcslen(prefix);
+    for (int i = 0; i < kPayloadCount; ++i) if (_wcsnicmp(kPayload[i].relPath, prefix, n) == 0) return true;
+    return false;
+}
+
 static bool ExtractKind(const std::wstring& win64, int kind, bool skipExisting, int& written)
 {
     for (int i = 0; i < kPayloadCount; ++i) {
@@ -372,6 +385,8 @@ static int Install(const std::wstring& root, bool spellbook, bool narrator)
     if (narrator) {
         Say(L"Installing Narrator...");
         StopNarrator(win64);
+        if (PayloadHasFolder(L"Narrator/pack/")) DeleteTree(Join(win64, L"Narrator\\pack"));   // recordings: replaced as a whole
+        DeleteTree(Join(win64, L"Narrator\\cache"));                                           // audio of the old live voice
         if (!ExtractKind(win64, 4, false, written)) return 3;
     }
 
@@ -384,7 +399,7 @@ static int Install(const std::wstring& root, bool spellbook, bool narrator)
 
     Say(L"\nDone - %d file(s) written to\n  %s", written, win64.c_str());
     Say(L"Config: %s (Enabled=1, PartySize=6). In game: Ctrl+Shift+Tab toggles the mod.", Join(win64, L"BiggerParty.ini").c_str());
-    if (narrator) Say(L"Narrator: world events are read aloud (needs internet). Ctrl+Shift+N changes the voice, Ctrl+Shift+M mutes.");
+    if (narrator) Say(L"Narrator: world events are read aloud by recorded voices. Ctrl+Shift+M mutes, Ctrl+Shift+= / - sets the volume.");
     return 0;
 }
 
@@ -405,7 +420,7 @@ static int Uninstall(const std::wstring& root)
     DeleteTree(Join(modsDir, L"PartyProbe"));
     bool removeSpellbook = IsDir(Join(modsDir, L"GiveSpellbook")) && Ask(L"Also remove the GiveSpellbook mod?", true);
     if (removeSpellbook) DeleteTree(Join(modsDir, L"GiveSpellbook"));
-    bool removeNarrator = (IsDir(Join(modsDir, L"Narrator")) || IsDir(Join(win64, L"Narrator"))) && Ask(L"Also remove the Narrator mod (world-event voice, with its cached audio)?", true);
+    bool removeNarrator = (IsDir(Join(modsDir, L"Narrator")) || IsDir(Join(win64, L"Narrator"))) && Ask(L"Also remove the Narrator mod (world-event voice, with its recordings)?", true);
     if (removeNarrator) { StopNarrator(win64); DeleteTree(Join(modsDir, L"Narrator")); DeleteTree(Join(win64, L"Narrator")); }
     if (Exists(Join(modsDir, L"mods.txt"))) {
         auto mods = ReadModsTxt(modsDir);
@@ -427,14 +442,14 @@ static int Uninstall(const std::wstring& root)
 int wmain(int argc, wchar_t** argv)
 {
     if (_isatty(_fileno(stdout))) _setmode(_fileno(stdout), _O_U16TEXT); else { SetConsoleOutputCP(CP_UTF8); _setmode(_fileno(stdout), _O_U8TEXT); }
-    bool doInstall = false, doUninstall = false, spellbook = false, narrator = false;
+    bool doInstall = false, doUninstall = false, spellbook = false, narrator = false, noNarrator = false;
     std::wstring gameArg;
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
         if (_wcsicmp(a.c_str(), L"/install") == 0) doInstall = true;
         else if (_wcsicmp(a.c_str(), L"/uninstall") == 0) doUninstall = true;
         else if (_wcsicmp(a.c_str(), L"/spellbook") == 0) spellbook = true;
-        else if (_wcsicmp(a.c_str(), L"/narrator") == 0) narrator = true;
+        else if (_wcsicmp(a.c_str(), L"/nonarrator") == 0) noNarrator = true;
         else if (_wcsicmp(a.c_str(), L"/silent") == 0) g_silent = true;
         else if (_wcsicmp(a.c_str(), L"/game") == 0 && i + 1 < argc) gameArg = argv[++i];
     }
@@ -465,16 +480,16 @@ int wmain(int argc, wchar_t** argv)
     bool haveMod = Exists(Join(win64, L"version.dll")) && IsDir(Join(win64, L"ue4ss\\Mods\\BiggerParty"));
     Say(L"UE4SS       : %s", haveUE4SS ? L"present" : L"will be installed");
     Say(L"BiggerParty : %s", haveMod ? L"installed (will be updated)" : L"not installed");
-    bool haveNarrator = IsDir(Join(win64, L"ue4ss\\Mods\\Narrator"));
-    if (haveNarrator) narrator = true;                            // an installed extra is kept up to date
+    // the Narrator is part of the default install and is kept up to date; "n" in the menu (or /nonarrator) leaves
+    // it out, and an installed copy as it is (the uninstaller still offers to remove it)
+    narrator = PayloadHasKind(4) && !noNarrator;
 
     if (!doInstall && !doUninstall) {
         if (g_silent) doInstall = true;
         else {
-            Say(L"\n  [Enter] Install / update BiggerParty%s", haveNarrator ? L" (+ Narrator, already installed)" : L"");
+            Say(L"\n  [Enter] Install / update BiggerParty%s", narrator ? L" + Narrator (world events read aloud by recorded voices)" : L"");
             Say(L"  [s]     ... + GiveSpellbook (multiclass-wizard spellbook fix)");
-            Say(L"  [n]     ... + Narrator (reads world events aloud with an AI voice; needs internet)");
-            Say(L"  [a]     ... + GiveSpellbook + Narrator");
+            if (narrator) Say(L"  [n]     BiggerParty without the Narrator");
             Say(L"  [u]     Uninstall");
             Say(L"  [q]     Quit");
             wprintf(L"> ");
@@ -482,7 +497,7 @@ int wmain(int argc, wchar_t** argv)
             wchar_t c = (wchar_t)towlower(buf[0]);
             if (c == L'u') doUninstall = true;
             else if (c == L'q') return 0;
-            else { doInstall = true; if (c == L's' || c == L'a') spellbook = true; if (c == L'n' || c == L'a') narrator = true; }
+            else { doInstall = true; if (c == L's' || c == L'a') spellbook = true; if (c == L'n') narrator = false; }
         }
     }
 

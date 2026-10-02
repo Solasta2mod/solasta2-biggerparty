@@ -8,9 +8,9 @@ six heroes and a hosted multiplayer lobby seat up to six players. Existing saves
 |---|---|---|
 | ![host screen with Maximum Players 6](docs/host-screen-6-players.jpg) | ![six-seat lobby](docs/lobby-6-seats.jpg) | ![six character slots in multiplayer party creation](docs/party-creation-6-slots-multiplayer.jpg) |
 
-Also included, both optional: **GiveSpellbook**, a small fix for the multiplayer bug where multiclassing
-into Wizard does not grant the spellbook, and **Narrator**, which reads the game's text-only world events
-aloud with a neural voice (see below).
+Also included: the **Narrator**, which reads the game's text-only world events aloud with a full cast of
+recorded voices (see below), and, optional, **GiveSpellbook**, a small fix for the multiplayer bug where
+multiclassing into Wizard does not grant the spellbook.
 
 > Early Access caveat: every game patch can change the code this mod patches. The mod checks the game
 > build at start-up and simply goes inert (with a note in `BiggerParty.log`) when it does not recognise
@@ -21,8 +21,8 @@ aloud with a neural voice (see below).
 1. Download `BiggerParty-x.y.zip` from the [Releases](../../releases) page and unzip it.
 2. Close the game and run **`BiggerParty-Installer.exe`**. It finds Solasta II through Steam (or asks for
    the folder), installs the [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) script loader if you do not
-   have it, and installs the mod. Press **Enter** for the default install, **s** to also get GiveSpellbook,
-   **n** to also get the Narrator, **a** for both.
+   have it, and installs the mod. Press **Enter** for the default install (BiggerParty and the Narrator),
+   **s** to also get GiveSpellbook, or **n** for BiggerParty without the Narrator.
 3. Start the game normally. Everyone in a multiplayer session installs the same way.
 
 Uninstall: run the installer again and press **u**.
@@ -38,7 +38,7 @@ Uninstall: run the installer again and press **u**.
 | Story dialogues | work with six heroes (the mod keeps a participating hero in party slot 1 while a dialogue runs) |
 | **Ctrl+Shift+End** | re-apply the UI tweaks on the current screen |
 | **Ctrl+Shift+Backspace** | status report into `ue4ss\UE4SS.log` |
-| **Ctrl+Shift+Up / Down** | enemy hit points +10% / −10% (see below; the Narrator, if installed, says the new value) |
+| **Ctrl+Shift+Up / Down** | enemy hit points +10% / −10% (see below) |
 | **Ctrl+Shift+F** | party heal: re-activates the formation manager, restarts follower AI, re-selects your hero |
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
@@ -49,41 +49,40 @@ GiveSpellbook (host / single player only): **Ctrl+Delete** grants a Wizard spell
 spellcasting reports it missing; **Ctrl+Backspace** reports; **Ctrl+Shift+Delete** forces one on everyone
 without a book.
 
-## Narrator (optional)
+## Narrator
 
-World events — the text-only encounters on the road ("Voracious seagulls circle in the air…") — are not
-voiced by the game. With the Narrator installed, the story text is read aloud as it appears on screen, and
-the outcome after your choice is read too. Titles, the options, the choice you made and the reward lines
-are deliberately left silent. Dialogue scenes are not narrated (they have their own voice acting).
-Picking an option moves the narration straight on to the outcome, and closing an event stops it at once.
+World events — the text-only encounters on the road — are not voiced by the game. The Narrator reads them
+aloud with a full cast of recorded voices: a narrator, and a voice of its own for each character who speaks.
+The story text is read as it appears on screen, and the outcome after your choice is read too; titles, the
+options, the choice you made and the reward lines are deliberately left silent, and dialogue scenes are not
+narrated (they have their own voice acting). Picking an option moves the narration straight on to the
+outcome, and closing an event stops it at once.
 
 | | |
 |---|---|
-| **Ctrl+Shift+N** | next voice — the new voice introduces itself so you can judge it; the choice is saved |
 | **Ctrl+Shift+M** | mute / unmute |
+| **Ctrl+Shift+= / Ctrl+Shift+-** | narration louder / quieter in 10% steps (10–100%, saved; a chime plays at the new level) |
 
-The voices are Microsoft Edge's online neural voices (free, no account), so **the Narrator needs an
-internet connection**; audio is cached in `<game>\Brimstone\Binaries\Win64\Narrator\cache`, so a line you have heard
-plays instantly and offline. Fifteen English voices (Irish, British, Australian, American; Emily, Irish, is the default) are on the key;
-any other Edge voice can be set as `Voice=` in `Narrator\narrator.ini`, along with `Rate=`, `Volume=` and
-`Pitch=`. The narration is done by a small helper program, `Narrator\SolastaNarrator.exe`, that the mod
-starts with the game and that exits when the game does (it is a packaged Python program — some antivirus
-software is suspicious of those; it only reads the mod's queue file, talks to Edge's speech service and
-plays audio). The Narrator is independent of the party size and works in single player and multiplayer
-(each player hears their own narration).
-
-If a recorded **voice pack** is installed in `Narrator\pack` (one MP3 per world-event passage plus an
-`index.json`), its recordings are played instead of the live voice: matched to the passage on screen,
-tolerant of small wording changes from game patches, and starting while the text is still being typed.
-Lines the pack lacks are read by the live voice. No pack is included, since recordings are made from the
-game's own text; see [how the Narrator works](docs/internals.md#narrator-voicing-the-world-events).
+The game's 131 world events have 490 passages (about 100 minutes); 474 are recorded so far, and the last
+16 follow in the next update. The recordings are made with Google's Gemini text-to-speech from the game's
+own text (written by Tactical Adventures and, for some events, by the community), installed in
+`<game>\Brimstone\Binaries\Win64\Narrator\pack` and matched to the passage on screen, tolerant of small
+wording changes from game patches, starting while the text is still being typed; a line without a
+recording (one of those 16, or text a later patch adds) is not read. No internet
+connection is needed. The narration is played by a small helper program, `Narrator\SolastaNarrator.exe`,
+that the mod starts with the game and that exits when the game does (it is a packaged Python program —
+some antivirus software is suspicious of those; it only reads the mod's queue file and plays audio).
+Settings are in `Narrator\narrator.ini` (`Enabled`, `PlaybackVolume`). The Narrator is independent of the
+party size and works in single player and multiplayer (each player hears their own narration). The
+installer installs it by default; **n** in its menu leaves it out. How it works:
+[the Narrator in the internals](docs/internals.md#narrator-voicing-the-world-events).
 
 ## Enemy hit points
 
 Six heroes make fights easier. `EnemyHitPointsPercent` in `BiggerParty.ini` (default `100`, 50–500) scales
 the maximum hit points of hostile monsters: `150` gives them one and a half times their book value.
 **Ctrl+Shift+Up / Ctrl+Shift+Down** change it in game by 10 and write it to the ini (the value persists between
-sessions; with the Narrator installed the new value is spoken, otherwise it only shows in the log). The host applies it
+sessions and shows in the log). The host applies it
 (the values replicate to everyone else) to every hostile monster whose maximum is still the definition's,
 so it also covers monsters that spawn later and saves loaded afterwards; damage already taken is kept.
 Setting it back to `100` restores the monsters the mod changed; a monster raised under a different
@@ -116,6 +115,13 @@ the game's split. Quest and world-event XP ("Each party member receives…") wer
   through a hero of theirs that the scene bound; a scene binds a fixed set of participants, so with six
   heroes a player whose heroes were all left out sees no choice and does not vote. If a player drops and
   rejoins, the game hands their heroes around; if a scene then fails to open for someone, save and reload.
+- **A turn that cannot be ended (multiplayer).** Now and then a player's End Turn does nothing. It followed
+  heroes the game dealt to one player and moved to another just after a load, so the host now hands such a
+  hero to itself and back to its player automatically, which is what cleared it by hand. If it still happens,
+  the host can do the same in the session screen (take the hero, give it back), or kick and let the player
+  rejoin, or reload. Every machine logs each party member's turn to `BiggerParty-history.log` (who that
+  machine thinks controls the hero, and what its turn panel offers); send that file from the stuck player's
+  game folder and say which hero it was.
 - **Followers stopping (game bug).** In the current Early Access build, party followers sometimes stop
   walking after a series of leader changes. It happens with four heroes and with the mod's script idle,
   so it is the game's; **save and reload** clears it. One cause the mod does fix: the game leaves its
@@ -159,7 +165,8 @@ BiggerParty\installer\build.bat                        -> dist\BiggerParty-Insta
 
 `<UE4SS dir>` is an extracted UE4SS *experimental* release (UE 5.6 support), i.e. the folder that
 contains `dwmapi.dll` and `ue4ss\`. The Narrator's helper is built first with `Narrator\companion\build.bat`
-(a Python venv with `edge-tts` and `pyinstaller`; see the script).
+(a Python venv with `pyinstaller`; see the script), and the voice pack goes in `Narrator\pack` (not in the
+repository: it is the game's text read aloud).
 
 `tools\` holds the reverse-engineering helpers used to find the patch sites (PDB symbol/offset scanners,
 a capstone-based disassembler, pak/utoc readers). After a game update, `pdb_pub.py` + `disasm.py` are how

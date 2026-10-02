@@ -1,21 +1,19 @@
 """Stage the installer payload and generate payload.rc / payload_index.h.
 
 Payload kinds: 0 = UE4SS (stock experimental build), 1 = BiggerParty, 2 = GiveSpellbook, 3 = docs, 4 = Narrator.
-The Narrator companion (Narrator/companion/dist/SolastaNarrator.exe) must be built first: see Narrator/companion/narrator.py.
+The Narrator companion (Narrator/companion/dist/SolastaNarrator.exe) must be built first (see
+Narrator/companion/build.bat), and the recorded voice pack must be in Narrator/pack (index.json + one MP3 per
+passage; it is game text read aloud, so it ships in the installer but never in the repository).
 Run from anywhere; paths are resolved relative to this file.
-With --private, local add-ons in BiggerParty/private/payload (kept out of the repo) are staged on top, as part
-of BiggerParty; release builds never pass it.
 """
-import os, shutil, sys
+import json, os, shutil, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)                       # BiggerParty/
 WS = os.path.dirname(ROOT)                         # solasta2-mods/
-PRIVATE = "--private" in sys.argv[1:]
-args = [a for a in sys.argv[1:] if a != "--private"]
-UE4SS_SRC = args[0] if args else None
+UE4SS_SRC = sys.argv[1] if len(sys.argv) > 1 else None
 if not UE4SS_SRC or not os.path.isdir(UE4SS_SRC):
-    print("usage: gen_payload.py <path to extracted UE4SS folder containing dwmapi.dll and ue4ss/> [--private]"); sys.exit(1)
+    print("usage: gen_payload.py <path to extracted UE4SS folder containing dwmapi.dll and ue4ss/>"); sys.exit(1)
 
 STAGE = os.path.join(HERE, "payload")
 shutil.rmtree(STAGE, ignore_errors=True)
@@ -48,26 +46,24 @@ for rel in ["Scripts/main.lua", "enabled.txt"]:
     os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((2, dst_rel))
 # 3: docs
 shutil.copy2(os.path.join(dist, "README.txt"), os.path.join(STAGE, "BiggerParty-README.txt")); entries.append((3, "BiggerParty-README.txt"))
-# 4: Narrator (mod + companion program)
+# 4: Narrator (mod, companion program and the recorded voice pack)
 nr = os.path.join(WS, "Narrator")
 for src_rel, dst_rel in [("Scripts/main.lua", "ue4ss/Mods/Narrator/Scripts/main.lua"), ("enabled.txt", "ue4ss/Mods/Narrator/enabled.txt"),
                          ("companion/dist/SolastaNarrator.exe", "Narrator/SolastaNarrator.exe")]:
     src = os.path.join(nr, src_rel.replace("/", os.sep)); dst = os.path.join(STAGE, dst_rel.replace("/", os.sep))
     if not os.path.exists(src): print("missing " + src + " (build the Narrator companion first)"); sys.exit(1)
     os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((4, dst_rel))
-
-# local add-ons, only on request: staged as BiggerParty files, replacing any staged file of the same name
-if PRIVATE:
-    priv = os.path.join(ROOT, "private", "payload")
-    if not os.path.isdir(priv): print("--private: no " + priv); sys.exit(1)
-    for dirpath, _, files in os.walk(priv):
-        for fn in files:
-            src = os.path.join(dirpath, fn)
-            rel = os.path.relpath(src, priv).replace("\\", "/")
-            dst = os.path.join(STAGE, rel.replace("/", os.sep))
-            os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst)
-            entries = [e for e in entries if e[1] != rel] + [(1, rel)]
-    print("private add-ons staged")
+pack = os.path.join(nr, "pack")
+if not os.path.exists(os.path.join(pack, "index.json")): print("missing " + os.path.join(pack, "index.json") + " (put the voice pack there first)"); sys.exit(1)
+with open(os.path.join(pack, "index.json"), encoding="utf-8") as f: index = json.load(f)
+files = [e["file"] for e in index.get("passages", [])]
+absent = [fn for fn in files if not os.path.exists(os.path.join(pack, fn))]
+if absent: print("voice pack: %d recording(s) listed in index.json are missing, e.g. %s" % (len(absent), absent[0])); sys.exit(1)
+pack_stage = os.path.join(STAGE, "Narrator", "pack")
+os.makedirs(pack_stage, exist_ok=True)
+for fn in ["index.json"] + files:
+    shutil.copy2(os.path.join(pack, fn), os.path.join(pack_stage, fn)); entries.append((4, "Narrator/pack/" + fn))
+print("voice pack: %d recordings of %d passages" % (len(files), len(index.get("all", [])) or len(files)))
 
 # zero-byte files (enabled.txt markers) cannot be embedded as resources: give them one byte
 for _, rel in entries:
