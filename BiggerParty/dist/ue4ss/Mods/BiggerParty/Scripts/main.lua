@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.4.14"
+BIGGERPARTY_VERSION = "1.4.15"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -3130,9 +3130,10 @@ end)()
         if pc and Try(function() return pc:IsValid() end) then return pc end
         return nil
     end
-    local function NameOfPC(pc)
+    local function NameOfPC(pc)                       -- nil while the game has no player state on it (during travel)
         local ps = Try(function() return pc.PlayerState end)
-        return (ps and Try(function() return ps:IsValid() end) and Str(Try(function() return ps:GetPlayerName() end))) or "A player"
+        local n = ps and Try(function() return ps:IsValid() end) and Str(Try(function() return ps:GetPlayerName() end))
+        return (n and n ~= "") and n or nil
     end
     local function RemoteControllers()
         local out = {}
@@ -3151,19 +3152,36 @@ end)()
         Keep("version: %s", text)
         pending[#pending + 1] = text
     end
-    -- the game's information dialog; its two texts go by their parameter names (title, then message by default)
+    -- the game's information dialog: its parameters are filled by name - the header, the body and the button's text
+    -- (HeaderText, BodyText, ConfirmText in this build; 2 Oct: passing two texts made the call fail), objects get the
+    -- player controller as world context
     local function Dialog(pc, title, message)
         local lib = StaticFindObject("/Script/Brimstone.Default__BrimstoneUIBlueprintLibrary")
         if not (lib and Try(function() return lib:IsValid() end)) then Out("version: no information dialog") return false end
         local fn = FunctionOf(lib, "ShowInformationDialog")
-        local names = {}
-        for _, q in ipairs(fn and ParamsOf(fn) or {}) do if q.type == "TextProperty" then names[#names + 1] = q.name:lower() end end
-        local a, b = title, message
-        if names[1] and names[2] and (names[2]:find("title", 1, true) or names[2]:find("header", 1, true)
-            or names[1]:find("message", 1, true) or names[1]:find("body", 1, true) or names[1]:find("desc", 1, true)) then
-            a, b = message, title
+        local args, names, texts, n = {}, {}, 0, 0
+        for _, q in ipairs(fn and ParamsOf(fn) or {}) do
+            if not q.ret then
+                local nm = q.name:lower()
+                local v
+                if q.type == "TextProperty" then
+                    texts = texts + 1
+                    if nm:find("header", 1, true) or nm:find("title", 1, true) then v = title
+                    elseif nm:find("body", 1, true) or nm:find("message", 1, true) or nm:find("desc", 1, true) then v = message
+                    elseif nm:find("confirm", 1, true) or nm:find("button", 1, true) or nm:find("ok", 1, true) then v = "OK"
+                    else v = (texts == 1 and title) or (texts == 2 and message) or "OK" end
+                    v = FText(v)
+                elseif q.type:match("ObjectProperty$") then v = pc
+                elseif q.type == "BoolProperty" then v = false
+                elseif q.type:match("IntProperty$") or q.type == "FloatProperty" or q.type == "DoubleProperty" or q.type == "ByteProperty" or q.type == "EnumProperty" then v = 0
+                else Out("version: the information dialog takes a %s (%s); not shown", q.type, q.name) return false end
+                n = n + 1
+                args[n] = v
+                names[#names + 1] = nm
+            end
         end
-        local ok, err = pcall(function() lib:ShowInformationDialog(pc, FText(a), FText(b)) end)
+        if n == 0 then args, n = { pc, FText(title), FText(message) }, 3 end
+        local ok, err = pcall(function() lib:ShowInformationDialog(table.unpack(args, 1, n)) end)
         Out("version: information dialog (%s) %s", table.concat(names, ", "), ok and "shown" or ("failed: " .. tostring(err)))
         return ok
     end
@@ -3193,8 +3211,10 @@ end)()
             local listed = {}
             for _, p in pairs(RemoteControllers()) do
                 local who = NameOfPC(p)
-                listed[who] = true
-                lines[#lines + 1] = who .. ": " .. (reported[who] or "not reported yet")
+                if who then
+                    listed[who] = true
+                    lines[#lines + 1] = who .. ": " .. (reported[who] or "not reported yet")
+                end
             end
             for who, v in pairs(reported) do if not listed[who] then lines[#lines + 1] = who .. ": " .. v .. " (left)" end end
         else
@@ -3237,7 +3257,7 @@ end)()
         for _, m in ipairs(heard) do
             if m.kind == "client" and role == "host" then
                 local p = remote[m.pc]
-                local who = p and NameOfPC(p) or "A player"
+                local who = (p and NameOfPC(p)) or "A player"
                 if reported[who] ~= m.version then Keep("version: %s has BiggerParty %s", who, m.version) end
                 reported[who] = m.version
                 if m.version ~= MINE then
@@ -3269,7 +3289,8 @@ end)()
                     pcall(function() p:ClientMessage(MARK .. MINE, MakeName("BiggerParty"), 0.0) end)
                 end
                 local who = NameOfPC(p)
-                if reported[who] == nil and t - firstSeen[a] >= SILENT then
+                if not who then firstSeen[a] = t end                  -- no player state yet (travel): not counted
+                if who and reported[who] == nil and t - firstSeen[a] >= SILENT then
                     Warn(string.format("%s has not reported a BiggerParty version: a version before 1.4.13, or none. Everyone in a session needs the same version (you have %s).", who, MINE))
                 end
             end

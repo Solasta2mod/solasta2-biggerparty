@@ -1,5 +1,12 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.4.15** — the version check's message now shows. Its information dialog takes a header, a body and a button
+text, and 1.4.13 and 1.4.14 passed two texts, so the call failed and a mismatch only reached
+`BiggerParty-history.log`; the message now appears, with an OK button. A player whose game has no player state
+for a moment (during travel to and from the world map) is no longer reported as "a player who has not reported a
+version". Everyone in a session needs 1.4.15. The voice pack is unchanged (474 of the 490 passages; the rest
+follow in the next update).
+
 **1.4.14** — stuck turns are freed by themselves, and two fixes for Mod options. When a player cannot end their
 hero's turn (End Turn clicked and nothing happening, or half a minute of their turn with no usable End Turn), their
 BiggerParty asks the host's, which hands the hero to itself and back — what the session screen's take and give
