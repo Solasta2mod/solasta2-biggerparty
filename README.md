@@ -31,6 +31,7 @@ Uninstall: run the installer again and press **u**.
 
 | | |
 |---|---|
+| **Mod options** (title screen and pause menu, after Settings) | the mod's settings as menu buttons, each showing its value: a click changes it (the mod on/off, party size, players, enemy hit points +10% / −10%, four-hero XP, Narrator on/off and volume); **Back** returns to the menu |
 | New Campaign | six character slots |
 | Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots start unassigned — joiners claim them, or the host takes them with the slot's assign button |
 | **Ctrl+Shift+Tab** | toggle the mod on/off (applies to the next new campaign / lobby) |

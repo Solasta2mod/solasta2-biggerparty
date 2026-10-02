@@ -307,7 +307,7 @@ local function Command(kind, extra)
 end
 local MUTED = (ReadIniValue("Enabled") == "0")
 local function ToggleMute()
-    MUTED = not MUTED
+    MUTED = not (ReadIniValue("Enabled") == "0")      -- from the ini: BiggerParty's Mod options can switch it too
     WriteIniValue("Enabled", MUTED and "0" or "1")
     Command(MUTED and "mute" or "unmute")
     Out("narration %s", MUTED and "muted" or "on")

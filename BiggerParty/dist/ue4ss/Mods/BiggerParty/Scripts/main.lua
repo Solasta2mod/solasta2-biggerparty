@@ -3058,3 +3058,288 @@ end)()
         end
     end)
 end)()
+
+-- Mod options in the game's own menus. The title screen's and the pause menu's WBP_GameMenuPanel keep their buttons
+-- (WBP_GameMenuButton, a CommonUI button) in a VerticalBox named MenuOptions. A "Mod options" button of the same
+-- class goes in after Settings; clicking it swaps the menu's buttons for the mod's settings, each a button that shows
+-- its value and changes it when clicked, and Back swaps them back (so does closing the menu). A click shows up as
+-- CommonButtonBase:HandleButtonClicked, which runs for every CommonUI button in the game: ours are recognised by
+-- address, and the work is done on the next tick, never inside the click. The keys and the ini work as before.
+-- Widgets are only ever touched as live children of a menu that the game still lists: a menu's screen is destroyed
+-- on a level change and its memory reused, so a remembered widget (or address) of a menu that is gone must never
+-- be used again (2 Oct 2026: a pause-menu click on a reused address relabelled the dead title-screen buttons and
+-- the game crashed). Inside a function of its own: this chunk is at Lua's limit of 200 locals.
+;(function()
+    local COLLAPSED = 1                               -- ESlateVisibility.Collapsed
+    local states, tries, ours, clicked = {}, {}, {}, nil   -- panel address -> state; our button address -> record
+    local VOLUMES = { 100, 80, 60, 40, 20 }           -- the narrator volume a click steps down through
+    local function NarratorDir()
+        local p = FindIniPath()
+        local d = p and p:gsub("[^/\\]*$", "")
+        local f = d and io.open(d .. "Narrator/SolastaNarrator.exe", "rb")
+        if not f then return nil end
+        f:close()
+        return d .. "Narrator/"
+    end
+    local function ReadKey(path, key)
+        local f = io.open(path, "r")
+        if not f then return nil end
+        local v = nil
+        for line in f:lines() do
+            local k, val = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+            if k and k:lower() == key:lower() then v = val end
+        end
+        f:close()
+        return v
+    end
+    local function WriteKey(path, key, value)
+        local lines, seen = {}, false
+        local f = io.open(path, "r")
+        if f then
+            for line in f:lines() do
+                local k = line:match("^%s*([%w_]+)%s*=")
+                if k and k:lower() == key:lower() then lines[#lines + 1] = key .. "=" .. value; seen = true else lines[#lines + 1] = line end
+            end
+            f:close()
+        else
+            lines[1] = "[Narrator]"
+        end
+        if not seen then lines[#lines + 1] = key .. "=" .. value end
+        local w = io.open(path, "w")
+        if not w then return false end
+        w:write(table.concat(lines, "\n"), "\n"); w:close()
+        return true
+    end
+    local function Queue(nd, line)
+        local f = io.open(nd .. "queue.txt", "a")
+        if f then f:write(line, "\n"); f:close() end
+    end
+    local function OnOff(b) return b and "On" or "Off" end
+    local function NarratorOn(nd) return ReadKey(nd .. "narrator.ini", "Enabled") ~= "0" end
+    local function NarratorVolume(nd) return tonumber(ReadKey(nd .. "narrator.ini", "PlaybackVolume") or "") or 100 end
+    -- the settings in menu order: the label (with the value) and what a click does
+    local ITEMS = {
+        { id = "mod", label = function() return "BiggerParty: " .. OnOff(CFG.Enabled) end, click = function() ToggleEnabled() end },
+        { id = "size", label = function() return "Party size: " .. CFG.PartySize end, click = function()
+            local old = CFG.PartySize
+            local v = old >= 6 and 4 or old + 1
+            WriteIniValue("PartySize", tostring(v))
+            -- the players follow the size while they are at its maximum, and never exceed it
+            if CFG.MaxPlayers >= old or CFG.MaxPlayers > v then WriteIniValue("MaxPlayers", tostring(v)) end
+            ReadConfig()
+            Out("options: party size %d, up to %d players (applies to the next new campaign)", CFG.PartySize, CFG.MaxPlayers)
+        end },
+        { id = "players", label = function() return "Players: " .. CFG.MaxPlayers end, click = function()
+            local v = CFG.MaxPlayers >= CFG.PartySize and 2 or CFG.MaxPlayers + 1
+            WriteIniValue("MaxPlayers", tostring(v))
+            ReadConfig()
+            Out("options: up to %d players (applies to the next hosted lobby)", CFG.MaxPlayers)
+        end },
+        { id = "hpup", label = function() return string.format("Enemy hit points: %d%%  (+10)", CFG.EnemyHitPointsPercent) end,
+          click = function() AdjustEnemyHitPoints(10) end },
+        { id = "hpdown", label = function() return string.format("Enemy hit points: %d%%  (-10)", CFG.EnemyHitPointsPercent) end,
+          click = function() AdjustEnemyHitPoints(-10) end },
+        { id = "xp", label = function() return "Four-hero XP: " .. OnOff(CFG.CombatExperienceAsIfFour) end, click = function()
+            WriteIniValue("CombatExperienceAsIfFour", CFG.CombatExperienceAsIfFour and "0" or "1")
+            ReadConfig()
+            Out("options: combat XP as if four heroes %s", OnOff(CFG.CombatExperienceAsIfFour))
+        end },
+        { id = "narrator", narrator = true, label = function(nd) return "Narrator: " .. OnOff(NarratorOn(nd)) end, click = function(nd)
+            local on = not NarratorOn(nd)
+            WriteKey(nd .. "narrator.ini", "Enabled", on and "1" or "0")
+            Queue(nd, on and '{"kind":"unmute"}' or '{"kind":"mute"}')
+            Out("options: narrator %s", OnOff(on))
+        end },
+        { id = "volume", narrator = true, label = function(nd) return "Narrator volume: " .. NarratorVolume(nd) .. "%" end, click = function(nd)
+            local cur, v = NarratorVolume(nd), 100
+            for _, x in ipairs(VOLUMES) do if x < cur then v = x break end end
+            WriteKey(nd .. "narrator.ini", "PlaybackVolume", tostring(v))
+            Queue(nd, string.format('{"kind":"volume","level":%d}', v))
+            Queue(nd, string.format('{"seq":0,"kind":"sample","text":"Narrator volume, %d percent."}', v))
+            Out("options: narrator volume %d%%", v)
+        end },
+        { id = "back", label = function() return "Back" end },
+    }
+    local function SetLabel(b, text)
+        if not pcall(function() b:SetButtonText(FText(text)) end) then pcall(function() b:SetButtonText(text) end) end
+    end
+    local function SlotValues(w)
+        local s = Try(function() return w.Slot end)
+        if not s then return nil end
+        return Try(function()
+            local p, z = s.Padding, s.Size
+            return { pad = { Left = p.Left, Top = p.Top, Right = p.Right, Bottom = p.Bottom }, h = s.HorizontalAlignment,
+                     v = s.VerticalAlignment, size = { Value = z.Value, SizeRule = z.SizeRule } }
+        end)
+    end
+    local function ApplySlot(slot, sv)
+        if not (slot and sv) then return end
+        pcall(function() slot:SetPadding(sv.pad) end)
+        pcall(function() slot:SetHorizontalAlignment(sv.h) end)
+        pcall(function() slot:SetVerticalAlignment(sv.v) end)
+        pcall(function() slot:SetSize(sv.size) end)
+    end
+    local function NewButton(panel, template, text)
+        local wbl = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+        local gs = StaticFindObject("/Script/Engine.Default__GameplayStatics")
+        local pc = Try(function() return gs:GetPlayerController(panel, 0) end)
+        if not (pc and Try(function() return pc:IsValid() end)) then pc = nil end
+        local b = Try(function() return wbl:Create(panel, template:GetClass(), pc) end)
+        if not (b and Try(function() return b:IsValid() end)) then return nil end
+        SetLabel(b, text)
+        return b
+    end
+    -- the live children of a live menu's box: { widget, its address } (the only widgets ever touched)
+    local function Children(box)
+        local out = {}
+        local n = Try(function() return box:GetChildrenCount() end) or 0
+        for k = 0, n - 1 do
+            local c = Try(function() return box:GetChildAt(k) end)
+            if c and Try(function() return c:IsValid() end) then out[#out + 1] = { w = c, a = c:GetAddress() } end
+        end
+        return out
+    end
+    local function Box(panel)
+        local box = Try(function() return panel.MenuOptions end)
+        if box and Try(function() return box:IsValid() end) then return box end
+        return nil
+    end
+    -- the Settings entry, by its gameplay tag (the labels are translated)
+    local function SettingsEntry(panel)
+        local tags = Try(function() return panel.MenuItemTags end)
+        for i = 1, Count(tags) do
+            local tag = Try(function() return tags[i] end)
+            local name = (tag and Str(Try(function() return tag.TagName end))) or ""
+            if name:lower():find("setting", 1, true) then
+                local w = Try(function() return panel:GetMenuItemByTag(tag) end)
+                if w and Try(function() return w:IsValid() end) then return w:GetAddress(), name end
+            end
+        end
+        return nil, nil
+    end
+    local function Forget(st)
+        st.alive = false
+        for a, rec in pairs(ours) do if rec.st == st then ours[a] = nil end end
+    end
+    local function Install(panel)
+        local box = Box(panel)
+        if not box then return nil end
+        local kids = Children(box)
+        if #kids < 2 or #kids > 20 then return nil end
+        local anchorAddr, tagName = SettingsEntry(panel)
+        local after, lastButton, how = nil, nil, nil
+        for i, c in ipairs(kids) do
+            if anchorAddr and c.a == anchorAddr then after = i end
+            if ClassName(c.w):find("GameMenuButton", 1, true) then lastButton = i end
+        end
+        if after then how = "after " .. tagName
+        elseif lastButton and lastButton > 1 then after = lastButton - 1; how = "before the last entry (no Settings tag found)"
+        else return nil end
+        local template = kids[lastButton].w
+        local st = { key = panel:GetAddress(), options = {}, showing = false, alive = true }
+        local entry = NewButton(panel, template, "Mod options")
+        if not entry then return nil end
+        local nd = NarratorDir()
+        local made = {}
+        for _, it in ipairs(ITEMS) do
+            if nd or not it.narrator then
+                local b = NewButton(panel, template, it.label(nd))
+                if b then made[#made + 1] = { w = b, it = it } end
+            end
+        end
+        st.shown = Try(function() return template:GetVisibility() end) or 4
+        -- a VerticalBox only appends: the entries after the insertion point come off and go back on after ours
+        local sv = SlotValues(template)
+        local tail = {}
+        for i = after + 1, #kids do tail[#tail + 1] = { w = kids[i].w, sv = SlotValues(kids[i].w) } end
+        for _, t in ipairs(tail) do box:RemoveChild(t.w) end
+        ApplySlot(box:AddChildToVerticalBox(entry), sv)
+        entry:SetVisibility(st.shown)
+        for _, o in ipairs(made) do
+            ApplySlot(box:AddChildToVerticalBox(o.w), sv)
+            o.w:SetVisibility(COLLAPSED)
+        end
+        for _, t in ipairs(tail) do ApplySlot(box:AddChildToVerticalBox(t.w), t.sv) end
+        st.entry = entry:GetAddress()
+        ours[st.entry] = { st = st, id = "entry" }
+        for _, o in ipairs(made) do ours[o.w:GetAddress()] = { st = st, id = o.it.id, item = o.it } end
+        Out("options: 'Mod options' added to %s (%s, %d settings)", ShortName(panel:GetFullName()), how, #made - 1)
+        return st
+    end
+    local function Refresh(st, box)
+        local nd = NarratorDir()
+        for _, c in ipairs(Children(box)) do
+            local rec = ours[c.a]
+            if rec and rec.st == st and rec.item then SetLabel(c.w, rec.item.label(nd)) end
+        end
+    end
+    local function ShowOptions(st, box, on)
+        if on == st.showing then return end
+        if on then ReadConfig(); Refresh(st, box) end
+        local saved = {}
+        for _, c in ipairs(Children(box)) do
+            local rec = ours[c.a]
+            if rec and rec.st == st and rec.id ~= "entry" then             -- one of the settings
+                pcall(function() c.w:SetVisibility(on and st.shown or COLLAPSED) end)
+            elseif on then                                                   -- the menu's own entries, and ours
+                saved[c.a] = Try(function() return c.w:GetVisibility() end) or st.shown
+                pcall(function() c.w:SetVisibility(COLLAPSED) end)
+            elseif st.saved and st.saved[c.a] then
+                pcall(function() c.w:SetVisibility(st.saved[c.a]) end)
+            end
+        end
+        st.saved = on and saved or nil
+        st.showing = on
+    end
+    local okH, errH = pcall(function()
+        RegisterHook("/Script/CommonUI.CommonButtonBase:HandleButtonClicked", function(Context)
+            local b = Try(function() return Context:get() end)
+            local a = b and Try(function() return b:GetAddress() end)
+            if a and ours[a] then clicked = a end
+        end)
+    end)
+    if not okH then Out("options: click hook not registered: %s", tostring(errH)) return end
+    Every(100, function()
+        -- the menus the game lists now; a state whose menu is gone is forgotten, never touched
+        local live = {}
+        for _, panel in ipairs(Instances("WBP_GameMenuPanel_C")) do live[panel:GetAddress()] = panel end
+        for key, st in pairs(states) do
+            if not live[key] then Forget(st); states[key] = nil; tries[key] = nil end
+        end
+        for key, panel in pairs(live) do
+            local st = states[key]
+            local box = Box(panel)
+            if st and box then
+                -- our entry must still be one of the box's children (a rebuilt list gets a new one)
+                local present = false
+                for _, c in ipairs(Children(box)) do if c.a == st.entry then present = true break end end
+                if not present then Forget(st); states[key] = nil; st = nil end
+            end
+            if not st and box and (tries[key] or 0) < 50 then
+                tries[key] = (tries[key] or 0) + 1
+                states[key] = Install(panel)
+            elseif st and box and st.showing and not Try(function() return panel:IsVisible() end) then
+                ShowOptions(st, box, false)
+            end
+        end
+        if not clicked then return end
+        local a = clicked
+        clicked = nil
+        local mine = ours[a]
+        if not (mine and mine.st.alive) then return end
+        local panel = live[mine.st.key]
+        local box = panel and Box(panel)
+        if not box then return end
+        local here = false
+        for _, c in ipairs(Children(box)) do if c.a == a then here = true break end end
+        if not here then return end                                        -- not one of this menu's buttons now
+        if mine.id == "entry" then ShowOptions(mine.st, box, true)
+        elseif mine.id == "back" then ShowOptions(mine.st, box, false)
+        else
+            local ok, err = pcall(mine.item.click, NarratorDir())
+            if not ok then Out("options: %s failed: %s", mine.id, tostring(err)) end
+            ReadConfig()
+            Refresh(mine.st, box)
+        end
+    end)
+end)()

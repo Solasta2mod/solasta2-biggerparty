@@ -268,6 +268,27 @@ function names on `UBrimstoneSettingsLocal`, per-preset values from a `FGameDiff
 "enemy hit points" row means native code that adds two UFunctions to that class and builds those objects
 after the registry initialises — not done; the value lives in the ini and on two hotkeys.
 
+## Mod options in the game's menus
+
+The title screen (`WBP_MainMenuScreen`) and the pause menu (`WBP_PauseMenuScreen`) both hold a
+`WBP_GameMenuPanel` (native `UGameMenuPanel`) whose entries are `WBP_GameMenuButton`s (native `UGameMenuButton` <-
+`UBrimstoneButtonBase` <- CommonUI's `UCommonButtonBase`) in a `VerticalBox` named `MenuOptions`; the panel maps
+gameplay tags (`MenuItemTags`, `GetMenuItemByTag`) to its entries. The mod creates more buttons of the same class
+(`UWidgetBlueprintLibrary::Create`) and labels them with `UBrimstoneButtonBase::SetButtonText`: a "Mod options"
+entry right after the entry whose tag names Settings (labels are translated, tags are not), and one button per
+setting plus Back, collapsed. A `VerticalBox` only appends, so the entries after the insertion point are taken off
+and put back after the new ones, each with its slot's padding, alignment and size. A click on any CommonUI button
+runs `UCommonButtonBase::HandleButtonClicked`; one hook on it recognises the mod's buttons by address and leaves the
+work to the next game-thread tick. "Mod options" collapses the menu's own entries and shows the settings, each label
+carrying its current value; a click changes the value through the same code as the keys (`ToggleEnabled`,
+`AdjustEnemyHitPoints`, the ini writer; the Narrator's settings through `narrator.ini` and its queue), and Back, or the
+menu closing, restores the entries' own visibility. The panel's own handlers never see the new buttons: they are not
+in its tag map. Widgets are only ever touched as live children of a menu the game still lists: a menu's screen is
+destroyed on a level change and its memory reused, so a widget (or an address) remembered from a menu that is gone
+must never be used again — a pause-menu click once matched a dead title-screen button by address, and relabelling
+that button crashed the game. A menu's state is dropped on the tick the menu leaves the game's object list, a click
+only counts when the button is a current child of its menu, and a menu whose list was rebuilt gets the entry again.
+
 ## Narrator: voicing the world events
 
 World events are `UWorldEventResponseScreen` widgets (`WBP_WorldEventResponseScreen`): `TitleText`, a

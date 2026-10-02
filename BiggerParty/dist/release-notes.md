@@ -1,5 +1,13 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.4.12** — Mod options in the game's menus. The title screen and the pause menu get a **Mod options** entry
+after Settings: the mod's settings as menu buttons, each showing its value — the mod on/off, party size and
+players (for the next new campaign / hosted lobby; the players follow the party size while at its maximum),
+enemy hit points +10% / −10% (applied at once by the host), four-hero XP, and the Narrator's on/off and volume.
+A click changes one; **Back**, or closing the menu, returns to the menu's own entries. The keys and
+`BiggerParty.ini` work as before, and **Ctrl+Shift+M** now follows the setting in `narrator.ini`, so it stays in
+step with the menu. The voice pack is unchanged (474 of the 490 passages; the rest follow in the next update).
+
 **1.4.11** — the Narrator speaks with recorded voices; a diagnostic and a repair for multiplayer turns.
 The Narrator now reads world events with a full recorded cast — a narrator, and a voice of its own for each
 character who speaks — made with Google's Gemini text-to-speech from the game's own text: 474 of the 490

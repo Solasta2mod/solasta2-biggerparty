@@ -14,6 +14,9 @@ INSTALL (one click)
   Everyone in a multiplayer session installs the same way.
 
 IN GAME
+  Mod options         -> in the title screen and pause menu, after Settings: the mod's settings as buttons
+                         showing their values (the mod on/off, party size, players, enemy hit points, four-hero
+                         XP, Narrator on/off and volume); a click changes one, Back returns to the menu
   New Campaign        -> six character slots
   Inventory/character -> six portraits (Tab or click to switch hero)
   Story dialogues     -> work with six heroes (four take a family role; two sit that scene out) (all "Create Character")
