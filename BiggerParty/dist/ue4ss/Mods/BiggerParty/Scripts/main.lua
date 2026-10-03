@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.4.15"
+BIGGERPARTY_VERSION = "1.4.16"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -2284,6 +2284,7 @@ local function WatchBattles()
         if not rec then
             rec = { id = ShortName(b:GetFullName()), pool = 0, heroes = {}, n = 0, state = state, done = false, seen = now }
             BATTLES[key] = rec
+            Out("combat xp: watching battle %s (state %s)", rec.id, tostring(state))
         end
         if not rec.done then
             local pool = Try(function() return b.EncounterXPAmount end)
@@ -2311,7 +2312,11 @@ local function WatchBattles()
     end
     for key, rec in pairs(BATTLES) do
         if not alive[key] then
-            if not rec.done and rec.state == 3 then TopUpBattle(rec, "gone") end   -- was Ending (the game had decided it), then destroyed before Ended was seen
+            -- was Ending (the game had decided it), or its OnEndBattle was seen, then destroyed before Ended was seen
+            if not rec.done and (rec.state == 3 or rec.ending) then TopUpBattle(rec, rec.ending and "ended (its end seen by the hook)" or "gone")
+            elseif not rec.done then
+                Keep("combat xp: battle %s went away in state %s without a top-up (pool %.0f, %d party contender(s))", rec.id, tostring(rec.state), rec.pool, rec.n)
+            end
             BATTLES[key] = nil
         elseif now - rec.seen > 7200 then
             BATTLES[key] = nil
@@ -2853,10 +2858,23 @@ Every(250, function()
     if not ok then HpError("formation manager watch", err) end
 end)
 
-Every(250, function()
+-- ten times a second: a battle can go from Started to destroyed between two looks (2 Oct: a battle resumed from a
+-- save mid-fight ended without a top-up), and ABattle::OnEndBattle, which sets Ending, is hooked too (it only helps
+-- when the game calls it through ProcessEvent; otherwise the hook never fires). Its own function: 200-locals limit.
+Every(100, function()
     local ok, err = pcall(WatchBattles)
     if not ok then HpError("battle watch", err) end
 end)
+;(function()
+    pcall(function()
+        RegisterHook("/Script/Brimstone.Battle:OnEndBattle", function(Context)
+            local b = Try(function() return Context:get() end)
+            local a = b and Try(function() return b:GetAddress() end)
+            local rec = a and BATTLES[a]
+            if rec then rec.ending = true end
+        end)
+    end)
+end)()
 
 Every(3000, function()
     if not CFG.Enabled then return end
@@ -2904,7 +2922,8 @@ Keep("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift
 -- member's turn goes to BiggerParty-history.log: who this machine thinks controls the hero, which hero this player
 -- is on, and what the turn panel offers (its group, the End Turn button); again when the same turn is still
 -- running after 45, 90, 135 and 180 s. Comparing a stuck player's lines with the host's shows whether their game
--- disagreed about who owns the hero. Inside a function of its own: this chunk is at Lua's limit of 200 locals.
+-- disagreed about who owns the hero; a stuck-turn request sends the player's line to the host's log as well
+-- (BiggerPartyDescribeTurn). Inside a function of its own: this chunk is at Lua's limit of 200 locals.
 ;(function()
     local last, since, repeats = nil, 0, 0
     local function Panel()
@@ -2932,6 +2951,7 @@ Keep("loaded — Enabled=%s PartySize=%d (%s). Ctrl+Shift+Tab toggle, Ctrl+Shift
         return string.format("controlled by %s%s; this player is on %s; %s", who, mine and " (this player)" or "",
             (on and on.IsValid and on:IsValid()) and HeroLabel(on) or "no hero", Panel())
     end
+    BiggerPartyDescribeTurn = Describe
     local function PartyMember(actor)
         local party = PartyArray()
         for i = 1, Count(party) do
@@ -3307,11 +3327,15 @@ end)()
 -- version check uses ("BiggerPartyAsk:unstick" as the world name of ServerNotifyLoadedWorld; a host before 1.4.14
 -- ignores it). The host checks that it is that player's hero's turn and does it (BiggerPartyRehand: never during a
 -- dialogue, at most once a minute per hero). Once per turn on its own; Mod options' "Fix a stuck turn" asks again
--- (and on the host hands the current hero over directly). Only addresses are kept between ticks.
+-- (and on the host hands the current hero over directly). A click seen in the same look as a new turn was made on
+-- the turn before, and ended it (2 Oct: when a player's next hero came straight after, ending the first hero's turn
+-- counted as a click on the second's, and asked for a hand-over 6 s into it). With each request goes this player's
+-- view of the turn ("BiggerPartyInfo:<text>", the turn diagnostic's line), which the host writes to its log: a stuck
+-- player's own log is often out of reach. Only addresses are kept between ticks.
 -- Inside a function of its own: this chunk is at Lua's limit of 200 locals.
 ;(function()
-    local ASK = "BiggerPartyAsk:unstick"
-    local inbox, endClicked, clickedButton = {}, false, nil
+    local ASK, INFO = "BiggerPartyAsk:unstick", "BiggerPartyInfo:"
+    local inbox, notes, endClicked, clickedButton = {}, {}, false, nil
     local turnKey, clickedAt, unusableSince, askedKey, lastManual = nil, nil, nil, nil, -100
     local function Role(pc)
         local ksl = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
@@ -3359,10 +3383,25 @@ end)()
         local o, me = OwnerStateOf(hero), LocalPlayerState()
         return (o and me and o:GetAddress() == me:GetAddress()) and true or false
     end
+    local function Send(pc, text)
+        local n = Try(function() return FName(text, EFindName.FNAME_Add) end) or FName(text)
+        return pcall(function() pc:ServerNotifyLoadedWorld(n) end)
+    end
     local function Ask(pc, hero, why)
-        local n = Try(function() return FName(ASK, EFindName.FNAME_Add) end) or FName(ASK)
-        local ok, err = pcall(function() pc:ServerNotifyLoadedWorld(n) end)
-        Keep("stuck turn: asked the host to hand %s over and back (%s)%s", HeroLabel(hero), why, ok and "" or ("; failed: " .. tostring(err)))
+        local ok, err = Send(pc, ASK)
+        local view = BiggerPartyDescribeTurn and Try(function() return BiggerPartyDescribeTurn(hero) end) or "?"
+        Keep("stuck turn: asked the host to hand %s over and back (%s)%s; %s", HeroLabel(hero), why, ok and "" or ("; failed: " .. tostring(err)), view)
+        -- this player's view of the turn, for the host's log (a host before 1.4.16 ignores it)
+        if ok then Send(pc, INFO .. (HeroLabel(hero) .. ": " .. why .. "; " .. view):sub(1, 900)) end
+    end
+    local function PlayerAt(a)                            -- host: the name of the player whose controller this is
+        for _, p in ipairs(Instances("PlayerController")) do
+            if p:GetAddress() == a then
+                local ps = Try(function() return p.PlayerState end)
+                return ps, (ps and Str(Try(function() return ps:GetPlayerName() end))) or "A player"
+            end
+        end
+        return nil, "A player"
     end
     -- Mod options' button: a client asks for its own hero, the host hands the current hero over itself
     BiggerPartyUnstick = function(why)
@@ -3382,10 +3421,12 @@ end)()
     end
     local okA, errA = pcall(function()
         RegisterHook("/Script/Engine.PlayerController:ServerNotifyLoadedWorld", function(Context, PName)
-            if Str(Try(function() return PName:get() end)) ~= ASK then return end
+            local s = Str(Try(function() return PName:get() end))
+            if not s or (s ~= ASK and s:sub(1, #INFO) ~= INFO) then return end
             local pc = Try(function() return Context:get() end)
             local a = pc and Try(function() return pc:GetAddress() end)
-            if a then inbox[#inbox + 1] = a end
+            if not a then return end
+            if s == ASK then inbox[#inbox + 1] = a else notes[#notes + 1] = { a = a, text = s:sub(#INFO + 1) } end
         end)
     end)
     if not okA then Out("stuck turn: request hook not registered: %s", tostring(errA)) end
@@ -3401,14 +3442,11 @@ end)()
         local pc = UEHelpers.GetPlayerController()
         if not (pc and pc:IsValid()) then return end
         local role = Role(pc)
-        local heard = inbox
-        inbox = {}
+        local heard, said = inbox, notes
+        inbox, notes = {}, {}
         if role == "host" then
             for _, a in ipairs(heard) do
-                local from = nil
-                for _, p in ipairs(Instances("PlayerController")) do if p:GetAddress() == a then from = p break end end
-                local ps = from and Try(function() return from.PlayerState end)
-                local who = (ps and Str(Try(function() return ps:GetPlayerName() end))) or "A player"
+                local ps, who = PlayerAt(a)
                 local hero = ActiveHero()
                 local o = hero and OwnerStateOf(hero)
                 if hero and o and ps and o:GetAddress() == ps:GetAddress() then
@@ -3416,6 +3454,10 @@ end)()
                 else
                     Keep("stuck turn: %s asked for a hand-over, but it is not their hero's turn (%s)", who, hero and HeroLabel(hero) or "no party member")
                 end
+            end
+            for _, n in ipairs(said) do
+                local _, who = PlayerAt(n.a)
+                Keep("stuck turn: %s's game at the request: %s", who, n.text)
             end
             return
         end
@@ -3427,7 +3469,8 @@ end)()
             clickedButton = nil
         end
         local hero, key = ActiveHero()
-        if key ~= turnKey then turnKey, clickedAt, unusableSince = key, nil, nil end
+        -- a click seen in the same look as a new turn was made on the turn before (and ended it)
+        if key ~= turnKey then turnKey, clickedAt, unusableSince, endClicked = key, nil, nil, false end
         if not (hero and Mine(hero)) then endClicked = false return end
         local t = os.time()
         if endClicked then endClicked = false; clickedAt = clickedAt or t end
@@ -3727,10 +3770,10 @@ end)()
                 shownBefore[key] = visible
                 if visible then Out("options: menu %s opened, %d entries, Mod options %s", ShortName(panel:GetFullName()), #kids, st and "in place" or "not added yet") end
             end
-            -- a menu without the entry is tried again every second for as long as it lives: one rebuilt while hidden
-            -- stays empty until it is next opened
+            -- a menu without the entry is tried again five times a second for as long as it lives: one rebuilt while
+            -- hidden stays empty until it is next opened, and in a hosted game the pause menu is rebuilt at every opening
             if not st and box and os.clock() >= (retryAt[key] or 0) then
-                retryAt[key] = os.clock() + 1
+                retryAt[key] = os.clock() + 0.2
                 states[key] = Install(panel)
             elseif st and box and st.showing and not visible then
                 ShowOptions(st, box, false)

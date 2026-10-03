@@ -305,6 +305,13 @@ ignores), once per turn; Mod options' "Fix a stuck turn" asks by hand. The host 
 is that player's hero's turn, never during a dialogue and at most once a minute per hero; the hand-back 1.5 s later
 looks the session, the slots and the hero up again by address instead of keeping them across the wait.
 
+A click seen in the same look (four a second) as a change of turn is put down to the turn before, which it ended:
+1.4.14 and 1.4.15 counted it against the new turn, so when a player's next hero came straight after, ending the
+first hero's turn asked for a hand-over 6 s into the second's (and used up that turn's one request). From 1.4.16
+each request is followed by the player's view of the turn, the turn diagnostic's line, sent the same way as
+`BiggerPartyInfo:<text>`; the host writes it to its `BiggerParty-history.log` ("stuck turn: <player>'s game at the
+request: ..."), since a stuck player's own log is often out of reach. A host before 1.4.16 ignores it.
+
 ## Version check between players
 
 Every copy of the mod carries its version (`BIGGERPARTY_VERSION` at the top of the script, bumped with the

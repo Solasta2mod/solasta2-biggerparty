@@ -1,5 +1,16 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.4.16** — the narration is complete: all 490 world-event passages are recorded (the 16 that were still missing,
+and final takes of 10 that had early ones). Stuck turns: a player whose heroes come one after another no longer
+gets a false hand-over. Ending the first hero's turn was counted as an End Turn click on the next hero's, so the
+host took that hero and gave it back 6 s into its turn, which also used up that turn's one automatic request. Each
+stuck-turn request now carries the player's view of the turn (who their game thinks controls the hero, which hero
+they are on, what their turn panel offers), which the host writes to its `BiggerParty-history.log`. Combat
+experience: a battle that ended between two of the mod's looks got no top-up (seen with a fight resumed from a
+save); it now looks ten times a second and also listens for the game's end-of-battle call. Mod options appears
+sooner when a menu is opened. Everyone in a session needs 1.4.16: the stuck player's own copy is the one that
+notices a stuck turn.
+
 **1.4.15** — the version check's message now shows. Its information dialog takes a header, a body and a button
 text, and 1.4.13 and 1.4.14 passed two texts, so the call failed and a mismatch only reached
 `BiggerParty-history.log`; the message now appears, with an OK button. A player whose game has no player state

@@ -68,12 +68,12 @@ outcome, and closing an event stops it at once.
 | **Ctrl+Shift+M** | mute / unmute |
 | **Ctrl+Shift+= / Ctrl+Shift+-** | narration louder / quieter in 10% steps (10–100%, saved; a chime plays at the new level) |
 
-The game's 131 world events have 490 passages (about 100 minutes); 474 are recorded so far, and the last
-16 follow in the next update. The recordings are made with Google's Gemini text-to-speech from the game's
-own text (written by Tactical Adventures and, for some events, by the community), installed in
+The game's 131 world events have 490 passages (about 100 minutes), and all of them are recorded. The
+recordings are made with Google's Gemini text-to-speech from the game's own text (written by Tactical
+Adventures and, for some events, by the community), installed in
 `<game>\Brimstone\Binaries\Win64\Narrator\pack` and matched to the passage on screen, tolerant of small
 wording changes from game patches, starting while the text is still being typed; a line without a
-recording (one of those 16, or text a later patch adds) is not read. No internet
+recording (text a later patch adds) is not read. No internet
 connection is needed. The narration is played by a small helper program, `Narrator\SolastaNarrator.exe`,
 that the mod starts with the game and that exits when the game does (it is a packaged Python program —
 some antivirus software is suspicious of those; it only reads the mod's queue file and plays audio).
