@@ -25,7 +25,7 @@ local function Tag(t) return Try(function() return t.TagName:ToString() end) or 
 
 local logPath = nil
 -- settings and the game's folder: one table (the main chunk is at Lua's limit of 200 locals)
-local KCFG = { version = "1.0.0", Enabled = true, VoiceLevel = 0.30, Lab = false, dir = nil }
+local KCFG = { version = "1.0.1", Enabled = true, VoiceLevel = 0.30, Lab = false, dir = nil }
 function KCFG.Dir()                      -- the folder of the game's exe ("" when it is the working folder)
     if KCFG.dir then return KCFG.dir end
     local f = io.open("BiggerParty.ini", "r")
@@ -73,6 +73,9 @@ local function Log(fmt, ...)
     if logPath == nil then
         logPath = false
         logPath = KCFG.Dir() .. "Kobold.log"
+        -- one launch per log: the last launch's is kept as Kobold-previous.log, older ones go
+        pcall(os.remove, KCFG.Dir() .. "Kobold-previous.log")
+        pcall(os.rename, logPath, KCFG.Dir() .. "Kobold-previous.log")
     end
     if logPath then
         local f = io.open(logPath, "a")

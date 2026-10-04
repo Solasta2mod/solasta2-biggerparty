@@ -1,5 +1,13 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.5.1** — heroes a scene leaves behind are brought along, and the kobold log starts fresh at every launch. A story
+scene with room for four heroes moves only those four: with six, a scene that took the party into a fort and closed
+its gate before a fight left the other two outside. When a scene that moved its heroes ends, the host now brings
+the heroes who sat it out next to the others, on a spot the game's navmesh check accepts and through the game's
+own teleport. A hero who was already somewhere else when the scene began stays where it is. The Kobold race's log
+(`Kobold.log`) now holds one launch, with the launch before kept as `Kobold-previous.log`; it used to grow without
+end. Everyone in a session needs 1.5.1 (the version check compares it), with the same Kobold race setting.
+
 **1.5.0** — the Kobold race, combat XP with companions, and GiveSpellbook retired. **The Kobold race** (optional:
 **k** in the installer) adds a playable kobold. Pick Kobold among the ancestries in character creation: the hero
 looks like the game's own kobolds, carries its weapons and gear, and has **Draconic Cry** (a bonus action that gives

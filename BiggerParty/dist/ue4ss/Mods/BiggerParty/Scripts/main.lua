@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.5.0"
+BIGGERPARTY_VERSION = "1.5.1"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -2223,6 +2223,138 @@ local function WatchDialogueBindings()
     end
 end
 
+-- Heroes a scene left behind. A story scene with room for four heroes moves only the heroes it binds; with six,
+-- the two left out stay where they were (a scene that took the party into a fort left them outside the gate it
+-- had closed). The host notes where every hero stands as a scene starts, and which heroes it binds. When it ends,
+-- a hero who sat it out, started near the scene's heroes and has been left far from all of them is brought next
+-- to the one it started nearest to: a spot from the game's navmesh check when it gives one, and the game's own
+-- teleport, which the party formation follows. Nothing moves when the scene moved nobody, or for a hero who was
+-- already somewhere else when the scene began. One table: the main chunk is at Lua's limit of 200 locals.
+REGROUP = { active = nil, lastInst = nil, MOVED = 500, LEFT = 600, GAINED = 400, WITH = 2000,
+    -- spots around the hero it joins, in that hero's frame (cm; X ahead, Y right): behind first, then beside, ahead
+    SPOTS = { { -150, -110 }, { -150, 110 }, { -280, 0 }, { 0, -200 }, { 0, 200 }, { -300, -220 }, { -300, 220 },
+              { 150, -160 }, { 150, 160 }, { -420, 0 } } }
+function REGROUP.Instance()
+    local mgr = DialogueManager()
+    local inst = mgr and Try(function() return mgr.CurrentDialogueInstance end)
+    return (inst and inst.IsValid and inst:IsValid()) and inst:GetAddress() or nil, mgr
+end
+function REGROUP.Snapshot(tag)
+    if not IsHost() then return end
+    local key = REGROUP.Instance()
+    local sc = REGROUP.active
+    if sc then
+        if key == nil or sc.inst == nil or sc.inst == key then return end   -- this scene is noted already
+        REGROUP.Run("another scene began")                                   -- the last one's end went unseen
+    end
+    if key and key == REGROUP.lastInst then return end             -- this scene was handled and is winding down
+    local start = {}
+    for _, hero in ipairs(HeroArray()) do
+        local pawn = PawnForHero(hero)
+        local loc = pawn and pawn:IsValid() and Try(function() return pawn:K2_GetActorLocation() end)
+        if loc then start[pawn:GetAddress()] = { pawn = pawn, loc = Vec(loc), name = ShortName(pawn:GetFullName()) } end
+    end
+    REGROUP.active = { inst = key, tag = (tag ~= "None") and tag or nil, start = start, bound = {} }
+    if key then REGROUP.lastInst = key end
+end
+function REGROUP.Watch()                                            -- host, every 250 ms
+    if not IsHost() then return end
+    local key, mgr = REGROUP.Instance()
+    local sc = REGROUP.active
+    if not key then                                                 -- no scene up
+        REGROUP.lastInst = nil
+        if sc then
+            sc.gone = sc.gone or os.clock()
+            if os.clock() - sc.gone > 2.0 then REGROUP.Run("the scene is gone") end
+        end
+        return
+    end
+    if sc and sc.inst == nil then sc.inst = key; REGROUP.lastInst = key end
+    if sc and sc.inst ~= key then REGROUP.Run("another scene began"); sc = nil end
+    if not sc and key ~= REGROUP.lastInst then REGROUP.Snapshot(nil); sc = REGROUP.active end
+    if not sc then return end
+    sc.gone = nil
+    -- the scene's heroes, once the manager's bindings are this scene's (its tag is set by then)
+    local tag = Try(function() return mgr.ActiveDialogueTag.TagName:ToString() end)
+    if not tag or tag == "None" or tag == "" then return end
+    sc.tag = sc.tag or tag
+    local arr = Try(function() return mgr.CurrentDialogueBindings end)
+    for i = 1, Count(arr) do
+        local actor = Try(function() return arr[i].Actor end)
+        if actor and actor.IsValid and actor:IsValid() and ShortName(actor:GetFullName()):match("^Character_") and HeroForPawn(actor) then
+            sc.bound[actor:GetAddress()] = actor
+        end
+    end
+end
+function REGROUP.Bring(pawn, anchor, taken)
+    local at = Try(function() return anchor:K2_GetActorLocation() end)
+    local rot = Try(function() return anchor:K2_GetActorRotation() end)
+    if not (at and rot) then return false, "the scene's hero has no position" end
+    at, rot = Vec(at), Rot(rot)
+    local yaw = math.rad(rot.Yaw or 0)
+    local cy, sy = math.cos(yaw), math.sin(yaw)
+    for _, o in ipairs(REGROUP.SPOTS) do
+        local p = { X = at.X + o[1] * cy - o[2] * sy, Y = at.Y + o[1] * sy + o[2] * cy, Z = at.Z }
+        local free = true
+        for _, q in ipairs(taken) do if Dist(p, q) < 90 then free = false break end end
+        if free then
+            -- the game's navmesh check returns its spot through an out parameter (a table filled in, or a second result)
+            local nav = {}
+            local okN, found, second = pcall(function() return pawn:FindValidNavmeshLocationToTeleport(p, nav) end)
+            local spot = (type(nav.X) == "number" and nav) or (type(second) == "table" and type(second.X) == "number" and second) or nil
+            local dest, how = p, ""
+            if okN and found and spot and Dist(spot, p) < 300 then dest, how = { X = spot.X, Y = spot.Y, Z = spot.Z }, ", navmesh spot" end
+            local okT, done = pcall(function() return pawn:K2_TeleportTo(dest, { Pitch = 0, Yaw = rot.Yaw, Roll = 0 }) end)
+            if okT and done then
+                local now = Try(function() return pawn:K2_GetActorLocation() end)
+                taken[#taken + 1] = now and Vec(now) or dest
+                return true, how
+            end
+        end
+    end
+    return false, "no spot near it took the teleport"
+end
+function REGROUP.Run(why)
+    local sc = REGROUP.active
+    REGROUP.active = nil
+    if not (sc and IsHost() and CFG.Enabled) then return end
+    local bound, taken, moved = {}, {}, 0
+    for addr, pawn in pairs(sc.bound) do
+        local now = pawn:IsValid() and Try(function() return pawn:K2_GetActorLocation() end)
+        if now then
+            local b = { pawn = pawn, now = Vec(now), start = sc.start[addr] and sc.start[addr].loc }
+            bound[#bound + 1] = b; taken[#taken + 1] = b.now
+            if b.start then moved = math.max(moved, Dist(b.start, b.now)) end
+        end
+    end
+    if #bound == 0 or moved < REGROUP.MOVED then return end         -- the scene moved nobody
+    local left = {}
+    for addr, rec in pairs(sc.start) do
+        if not sc.bound[addr] and rec.pawn:IsValid() then left[#left + 1] = rec end
+    end
+    table.sort(left, function(a, b) return a.name < b.name end)
+    local lines = {}
+    for _, rec in ipairs(left) do
+        local now = Try(function() return rec.pawn:K2_GetActorLocation() end)
+        if now then
+            now = Vec(now)
+            local nearNow, nearStart, anchor = math.huge, math.huge, nil
+            for _, b in ipairs(bound) do
+                nearNow = math.min(nearNow, Dist(now, b.now))
+                if b.start and Dist(rec.loc, b.start) < nearStart then nearStart, anchor = Dist(rec.loc, b.start), b end
+            end
+            if anchor and nearNow >= REGROUP.LEFT and nearNow > nearStart + REGROUP.GAINED and nearStart <= REGROUP.WITH then
+                local ok, how = REGROUP.Bring(rec.pawn, anchor.pawn, taken)
+                lines[#lines + 1] = string.format("%s, left %.0f m from the others: %s", rec.name, nearNow / 100,
+                    ok and ("brought next to " .. ShortName(anchor.pawn:GetFullName()) .. how) or ("not moved (" .. tostring(how) .. ")"))
+            end
+        end
+    end
+    if #lines > 0 then
+        Keep("regroup: %s ended (%s; it moved its heroes up to %.0f m): %s", sc.tag or "a scene", why, moved / 100, table.concat(lines, "; "))
+    end
+end
+
 -- Item transfers. The item menu lists "Transfer to <hero>" for every other party member, but its handler was
 -- written for three receivers (four heroes minus the carrier): entries four and five do nothing. When a
 -- transfer entry is clicked and no transfer follows, the mod does it through the item's own view model.
@@ -2614,6 +2746,7 @@ local SWAP_DONE = {}
 local function PossessEarly(self, tag)
     if not Active() then return end
     if not tag or tag == "None" or tag == "" then return end
+    if IsHost() then pcall(REGROUP.Snapshot, tag) end              -- where every hero stands before the scene moves anyone
     local owner = Try(function() return self:GetOwner() end)
     if not (owner and owner:IsValid()) then return end
     if not ShortName(owner:GetFullName()):match("^Character_") then return end
@@ -2693,7 +2826,7 @@ PRE_DIALOGUE_SINCE = 0
 for _, mod in ipairs({ "/Script/Brimstone.", "/Script/DialogueSystem.", "/Script/BrimstoneDialogue.", "/Script/TacticalCore." }) do
     local okE = pcall(function()
         RegisterHook(mod .. "DialogueManagerComponent:OnDialogueInstanceEnded", function(Context)
-            After(500, function() pcall(RestorePartyOrder); pcall(ResyncSelection); pcall(HandBackRemotePlayers, "the scene ended") end)
+            After(500, function() pcall(RestorePartyOrder); pcall(ResyncSelection); pcall(HandBackRemotePlayers, "the scene ended"); pcall(REGROUP.Run, "the scene ended") end)
         end)
     end)
     if okE then break end
@@ -2877,6 +3010,8 @@ Every(250, function()
     if not CFG.Enabled then return end
     local ok, err = pcall(WatchDialogueBindings)
     if not ok then HpError("dialogue watch", err) end
+    ok, err = pcall(REGROUP.Watch)
+    if not ok then HpError("regroup watch", err) end
     ok, err = pcall(WatchOwnership)
     if not ok then HpError("ownership watch", err) end
     ok, err = pcall(WatchFormationManager)

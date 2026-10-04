@@ -212,6 +212,19 @@ Two dead ends worth recording so nobody repeats them: the multiplayer *vote pane
 is for rests, checkpoints and fast travel, not dialogue choices; and pre-assigning family roles to the extra
 heroes does not help — the scene's participant count is what matters, not the roles.
 
+**Heroes a scene leaves behind.** A scene moves only the heroes it binds. With four heroes that is the whole
+party; with six, a scene that takes its heroes somewhere (into a fort whose gate it then closes, before a
+fight) leaves the two who sat it out where they stood. The host notes every hero's position as a scene
+starts (in the participant-context pre-hook, before anything moves) and the scene's bound heroes once the
+manager's bindings carry the scene's own tag (right at the start they can still be the previous scene's).
+When the scene ends (`OnDialogueInstanceEnded`, or two seconds after its instance is gone), and if the scene
+moved its heroes at least 5 m, every hero who sat it out, started within 20 m of a bound hero and now stands
+at least 6 m from all of them (4 m further than at the start) is brought next to the bound hero it started
+nearest to: a spot behind or beside that hero, checked with `ABrimstoneCharacter::FindValidNavmeshLocationToTeleport`
+(an out parameter, used when this UE4SS fills it in), and `K2_TeleportTo`, which runs the character's own
+`TeleportTo` and so the party formation's `ActorTeleported`. A hero who was elsewhere when the scene began
+is left alone, and guests are never moved (in the unmodded game a guest a scene does not bind stays put too).
+
 ## Party formation with more than four heroes
 
 Followers walk to *anchors* that the formation manager arranges around the party leader, and each follower's

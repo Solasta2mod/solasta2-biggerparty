@@ -30,7 +30,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.5.0 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967)";
+static const wchar_t* kVersion = L"BiggerParty 1.5.1 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
@@ -437,6 +437,7 @@ static int Uninstall(const std::wstring& root)
         DeleteTree(Join(modsDir, L"Kobold"));
         DeleteFileW(Join(win64, L"Kobold.ini").c_str());
         DeleteFileW(Join(win64, L"Kobold.log").c_str());
+        DeleteFileW(Join(win64, L"Kobold-previous.log").c_str());
         DeleteFileW(Join(win64, L"Kobold_picture.lock").c_str());
         DeleteTree(Join(win64, L"Narrator\\packs\\kobold"));
     }
