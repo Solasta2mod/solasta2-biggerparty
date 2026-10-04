@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.4.16"
+BIGGERPARTY_VERSION = "1.5.0"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -141,6 +141,27 @@ local function FindIniPath()
         if f then f:close(); iniPath = c; return c end
     end
     return nil
+end
+-- the Kobold race (its own mod, installed with BiggerParty): its folder when installed, and whether Kobold.ini has it
+-- on. It changes the game's rules (an ancestry), so it is part of the version the players of a session compare.
+function BiggerPartyKoboldDir()
+    local p = FindIniPath()
+    local d = p and p:gsub("[^/\\]*$", "")
+    if not d then return nil end
+    local f = io.open(d .. "ue4ss/Mods/Kobold/Scripts/main.lua", "r")
+    if not f then return nil end
+    f:close()
+    return d
+end
+function BiggerPartyKoboldOn(d)
+    d = d or BiggerPartyKoboldDir()
+    if not d then return false end
+    local f = io.open(d .. "Kobold.ini", "r")
+    if not f then return true end                    -- not written yet: the Kobold mod's default, on
+    local on = true
+    for line in f:lines() do if line:match("^%s*Enabled%s*=%s*0") then on = false end end
+    f:close()
+    return on
 end
 FindIniPathRef = FindIniPath
 
@@ -2211,8 +2232,10 @@ local TRANSFER_SEEN = false
 -- EncounterXPAmount (every hostile contender's XP reward) by the number of contenders on the party's
 -- team and gives each of them that share: six heroes level at two-thirds the pace of four. The host
 -- watches the battles and, once one has ended, tops every hero up to a four-hero share through the
--- game's own grant functor (the console shows the extra gain as a second line). Guests fighting on the
--- party's side count in the game's divisor but have no progress component, so they get nothing either way.
+-- game's own grant functor (the console shows the extra gain as a second line). Companions fighting on the
+-- party's side (story guests, summons) count in the game's divisor but have no progress component, so they
+-- get nothing either way; the four-hero share counts them too, as the game would in a party of four heroes
+-- and the same companions. Four heroes or fewer get nothing added, companions or not.
 --------------------------------------------------------------------------------------------------
 local BATTLES = {}                 -- address -> { id, pool, heroes, n, state, done, seen }
 local XP_FUNCTOR_CDO = nil
@@ -2255,11 +2278,13 @@ local function GrantExperienceTo(hero, amount)
 end
 local function TopUpBattle(rec, why)
     rec.done = true
-    if rec.n <= 4 or #rec.heroes == 0 or rec.pool <= 0 then
-        Out("combat xp: battle %s %s: pool %.0f, %d party contender(s), nothing to add", rec.id, why, rec.pool, rec.n)
+    local companions = math.max(0, rec.n - #rec.heroes)       -- party-team contenders without hero progress
+    if #rec.heroes <= 4 or rec.pool <= 0 then
+        Out("combat xp: battle %s %s: pool %.0f, %d hero(es) and %d companion(s), nothing to add", rec.id, why, rec.pool, #rec.heroes, companions)
         return
     end
-    local extra = math.floor(rec.pool / 4) - math.floor(rec.pool / rec.n)
+    local share = math.floor(rec.pool / (4 + companions))
+    local extra = share - math.floor(rec.pool / rec.n)
     if extra <= 0 then return end
     local given, names = 0, {}
     for _, h in ipairs(rec.heroes) do
@@ -2269,8 +2294,8 @@ local function TopUpBattle(rec, why)
             else Out("combat xp: could not grant %d to %s: %s", extra, ShortName(h:GetFullName()), tostring(err)) end
         end
     end
-    Keep("combat xp: battle %s %s: pool %.0f split %d ways by the game (%d each); +%d to %d hero(es) for a four-hero share of %d: %s",
-        rec.id, why, rec.pool, rec.n, math.floor(rec.pool / rec.n), extra, given, math.floor(rec.pool / 4), table.concat(names, ", "))
+    Keep("combat xp: battle %s %s: pool %.0f split %d ways by the game (%d each); +%d to %d hero(es) for a four-hero share of %d (%d companion(s) counted): %s",
+        rec.id, why, rec.pool, rec.n, math.floor(rec.pool / rec.n), extra, given, share, companions, table.concat(names, ", "))
 end
 local function WatchBattles()
     if not (CFG.Enabled and CFG.CombatExperienceAsIfFour and IsHost()) then return end
@@ -3135,7 +3160,7 @@ end)()
 -- or world event is up. Mod options shows the version and lists everyone's. Only addresses are kept between ticks.
 -- Inside a function of its own: this chunk is at Lua's limit of 200 locals.
 ;(function()
-    local MINE = BIGGERPARTY_VERSION or "?"
+    local MINE = (BIGGERPARTY_VERSION or "?") .. (BiggerPartyKoboldOn() and "+kobold" or "")   -- the Kobold race changes the rules
     local MARK = "BiggerParty:"
     local SILENT = 180                                -- seconds before a player who reported nothing is mentioned
     local role = "single player"                      -- "host", "client" or "single player"
@@ -3525,7 +3550,7 @@ end)()
         f:close()
         return v
     end
-    local function WriteKey(path, key, value)
+    local function WriteKey(path, key, value, header)
         local lines, seen = {}, false
         local f = io.open(path, "r")
         if f then
@@ -3535,7 +3560,7 @@ end)()
             end
             f:close()
         else
-            lines[1] = "[Narrator]"
+            lines[1] = header or "[Narrator]"
         end
         if not seen then lines[#lines + 1] = key .. "=" .. value end
         local w = io.open(path, "w")
@@ -3550,6 +3575,12 @@ end)()
     local function OnOff(b) return b and "On" or "Off" end
     local function NarratorOn(nd) return ReadKey(nd .. "narrator.ini", "Enabled") ~= "0" end
     local function NarratorVolume(nd) return tonumber(ReadKey(nd .. "narrator.ini", "PlaybackVolume") or "") or 100 end
+    local KOBOLD_AT_LOAD = BiggerPartyKoboldOn()       -- what this game runs with (Enabled applies from the next start)
+    local KOBOLD_VOICES = { 50, 40, 30, 25, 20, 15, 10 } -- the kobold voice level a click steps down through
+    local function KoboldVoice(kd)
+        local v = tonumber(ReadKey((kd or BiggerPartyKoboldDir() or "") .. "Kobold.ini", "VoiceLevel") or "")
+        return v and math.floor(v * 100 + 0.5) or 30
+    end
     -- the settings in menu order: the label (with the value) and what a click does
     local ITEMS = {
         { id = "version", label = function() return BiggerPartyVersionLabel and BiggerPartyVersionLabel() or ("BiggerParty " .. tostring(BIGGERPARTY_VERSION)) end,
@@ -3594,6 +3625,24 @@ end)()
             Queue(nd, string.format('{"kind":"volume","level":%d}', v))
             Queue(nd, string.format('{"seq":0,"kind":"sample","text":"Narrator volume, %d percent."}', v))
             Out("options: narrator volume %d%%", v)
+        end },
+        { id = "kobold", kobold = true, label = function()
+            local on = BiggerPartyKoboldOn()
+            return "Kobold race: " .. OnOff(on) .. (on ~= KOBOLD_AT_LOAD and "  (from the next start)" or "")
+        end, click = function()
+            local kd = BiggerPartyKoboldDir()
+            if not kd then return end
+            local on = not BiggerPartyKoboldOn(kd)
+            WriteKey(kd .. "Kobold.ini", "Enabled", on and "1" or "0", "[Kobold]")
+            Out("options: kobold race %s (from the next start)", OnOff(on))
+        end },
+        { id = "koboldvoice", kobold = true, label = function() return string.format("Kobold voice: %d%%", KoboldVoice()) end, click = function()
+            local kd = BiggerPartyKoboldDir()
+            if not kd then return end
+            local cur, v = KoboldVoice(kd), KOBOLD_VOICES[1]
+            for _, x in ipairs(KOBOLD_VOICES) do if x < cur then v = x break end end
+            WriteKey(kd .. "Kobold.ini", "VoiceLevel", string.format("%d.%02d", v // 100, v % 100), "[Kobold]")
+            Out("options: kobold voice %d%%", v)
         end },
         { id = "back", label = function() return "Back" end },
     }
@@ -3682,10 +3731,10 @@ end)()
         local st = { key = panel:GetAddress(), options = {}, showing = false, alive = true }
         local entry = NewButton(panel, template, "Mod options")
         if not entry then return nil end
-        local nd = NarratorDir()
+        local nd, kd = NarratorDir(), BiggerPartyKoboldDir()
         local made = {}
         for _, it in ipairs(ITEMS) do
-            if nd or not it.narrator then
+            if (nd or not it.narrator) and (kd or not it.kobold) then
                 local b = NewButton(panel, template, it.label(nd))
                 if b then made[#made + 1] = { w = b, it = it } end
             end

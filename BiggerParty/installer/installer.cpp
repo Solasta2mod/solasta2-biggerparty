@@ -1,11 +1,12 @@
 // BiggerParty installer for Solasta II — self-contained console installer.
 //
 // Carries UE4SS (experimental build for UE 5.6), the BiggerParty mod (version.dll patcher + Lua) and the
-// Narrator (with its recorded voice pack) and the optional GiveSpellbook mod as embedded resources. Finds the
-// game through Steam, checks that the game build still has the four patch sites, installs / updates /
-// uninstalls, and edits UE4SS's mod list.
+// Narrator (with its recorded voice pack), and the optional Kobold mod (the Kobold race with its voice, an add-on
+// pack of the Narrator's) as embedded resources. Finds the game through Steam, checks that the game build still has
+// the four patch sites, installs / updates / uninstalls, and edits UE4SS's mod list. GiveSpellbook was retired in
+// 1.5.0 (the game fixed the multiclass spellbook bug): an update offers to remove an installed copy.
 //
-// Usage: double-click. Command line: BiggerParty-Installer.exe [/install|/uninstall] [/spellbook] [/nonarrator] [/game "<Solasta 2 folder>"] [/silent]
+// Usage: double-click. Command line: BiggerParty-Installer.exe [/install|/uninstall] [/kobold] [/nonarrator] [/game "<Solasta 2 folder>"] [/silent]
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -29,7 +30,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.4.16 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967)";
+static const wchar_t* kVersion = L"BiggerParty 1.5.0 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
@@ -325,7 +326,7 @@ static bool ExtractKind(const std::wstring& win64, int kind, bool skipExisting, 
         if (kPayload[i].kind != kind) continue;
         std::wstring dst = Join(win64, ToWin(kPayload[i].relPath));
         if (skipExisting && Exists(dst)) continue;
-        if (_wcsicmp(kPayload[i].relPath, L"BiggerParty.ini") == 0 && Exists(dst)) continue;   // keep the user's settings
+        if ((_wcsicmp(kPayload[i].relPath, L"BiggerParty.ini") == 0 || _wcsicmp(kPayload[i].relPath, L"Kobold.ini") == 0) && Exists(dst)) continue;   // keep the user's settings
         const void* d; size_t n;
         if (!GetPayload(kPayload[i].id, d, n)) { Say(L"  missing embedded file %s", kPayload[i].relPath); return false; }
         if (!WriteFileBytes(dst, d, n)) {
@@ -348,7 +349,7 @@ static bool DeleteTree(const std::wstring& dir)
     return SHFileOperationW(&op) == 0;
 }
 
-static int Install(const std::wstring& root, bool spellbook, bool narrator)
+static int Install(const std::wstring& root, bool narrator, bool kobold)
 {
     std::wstring win64 = Join(root, L"Brimstone\\Binaries\\Win64");
     std::wstring modsDir = Join(win64, L"ue4ss\\Mods");
@@ -378,10 +379,11 @@ static int Install(const std::wstring& root, bool spellbook, bool narrator)
     if (!ExtractKind(win64, 1, false, written)) return 3;
     if (!ExtractKind(win64, 3, false, written)) return 3;      // README
 
-    if (spellbook) {
-        Say(L"Installing GiveSpellbook...");
-        if (!ExtractKind(win64, 2, false, written)) return 3;
-    }
+    // GiveSpellbook (retired): the game fixed the bug it worked around, and its force key hands every hero a
+    // Wizard spellbook with spellcasting on (a fighter then has wizard spells)
+    bool dropSpellbook = IsDir(Join(modsDir, L"GiveSpellbook")) &&
+        Ask(L"GiveSpellbook is no longer needed (the game fixed the multiclass spellbook bug). Remove it?", true);
+    if (dropSpellbook) { Say(L"Removing GiveSpellbook..."); DeleteTree(Join(modsDir, L"GiveSpellbook")); }
     if (narrator) {
         Say(L"Installing Narrator...");
         StopNarrator(win64);
@@ -389,17 +391,27 @@ static int Install(const std::wstring& root, bool spellbook, bool narrator)
         DeleteTree(Join(win64, L"Narrator\\cache"));                                           // audio of the old live voice
         if (!ExtractKind(win64, 4, false, written)) return 3;
     }
+    if (kobold) {
+        Say(L"Installing the Kobold race...");
+        if (!narrator) StopNarrator(win64);
+        DeleteTree(Join(win64, L"Narrator\\packs\\kobold"));                                  // its voice: replaced as a whole
+        if (!ExtractKind(win64, 5, false, written)) return 3;
+    }
 
     auto mods = ReadModsTxt(modsDir);
     SetMod(mods, "BiggerParty", true, true);
-    if (spellbook) SetMod(mods, "GiveSpellbook", true, true);
+    if (dropSpellbook) RemoveMod(mods, "GiveSpellbook");
     if (narrator) SetMod(mods, "Narrator", true, true);
+    if (kobold) SetMod(mods, "Kobold", true, true);
     if (IsDir(Join(modsDir, L"PartyProbe"))) SetMod(mods, "PartyProbe", false, false);   // research version; never both
+    if (kobold && IsDir(Join(modsDir, L"KoboldLab"))) SetMod(mods, "KoboldLab", false, false);   // development version; never both
     if (!WriteMods(modsDir, mods)) { Say(L"FAILED to update ue4ss\\Mods\\mods.txt"); return 3; }
 
     Say(L"\nDone - %d file(s) written to\n  %s", written, win64.c_str());
     Say(L"Config: %s (Enabled=1, PartySize=6). In game: Ctrl+Shift+Tab toggles the mod.", Join(win64, L"BiggerParty.ini").c_str());
     if (narrator) Say(L"Narrator: world events are read aloud by recorded voices. Ctrl+Shift+M mutes, Ctrl+Shift+= / - sets the volume.");
+    if (kobold) Say(L"Kobold race: in character creation. Mod options turns it off (from the next start) and sets the kobold voice; %s.",
+                    narrator || IsDir(Join(win64, L"Narrator")) ? L"its cutscene lines are spoken by the Narrator's companion" : L"its voice needs the Narrator");
     return 0;
 }
 
@@ -420,12 +432,21 @@ static int Uninstall(const std::wstring& root)
     DeleteTree(Join(modsDir, L"PartyProbe"));
     bool removeSpellbook = IsDir(Join(modsDir, L"GiveSpellbook")) && Ask(L"Also remove the GiveSpellbook mod?", true);
     if (removeSpellbook) DeleteTree(Join(modsDir, L"GiveSpellbook"));
+    bool removeKobold = IsDir(Join(modsDir, L"Kobold")) && Ask(L"Also remove the Kobold race mod (with its voice)?", true);
+    if (removeKobold) {
+        DeleteTree(Join(modsDir, L"Kobold"));
+        DeleteFileW(Join(win64, L"Kobold.ini").c_str());
+        DeleteFileW(Join(win64, L"Kobold.log").c_str());
+        DeleteFileW(Join(win64, L"Kobold_picture.lock").c_str());
+        DeleteTree(Join(win64, L"Narrator\\packs\\kobold"));
+    }
     bool removeNarrator = (IsDir(Join(modsDir, L"Narrator")) || IsDir(Join(win64, L"Narrator"))) && Ask(L"Also remove the Narrator mod (world-event voice, with its recordings)?", true);
     if (removeNarrator) { StopNarrator(win64); DeleteTree(Join(modsDir, L"Narrator")); DeleteTree(Join(win64, L"Narrator")); }
     if (Exists(Join(modsDir, L"mods.txt"))) {
         auto mods = ReadModsTxt(modsDir);
         RemoveMod(mods, "BiggerParty"); RemoveMod(mods, "PartyProbe");
         if (removeSpellbook) RemoveMod(mods, "GiveSpellbook");
+        if (removeKobold) RemoveMod(mods, "Kobold");
         if (removeNarrator) RemoveMod(mods, "Narrator");
         WriteMods(modsDir, mods);
     }
@@ -442,13 +463,14 @@ static int Uninstall(const std::wstring& root)
 int wmain(int argc, wchar_t** argv)
 {
     if (_isatty(_fileno(stdout))) _setmode(_fileno(stdout), _O_U16TEXT); else { SetConsoleOutputCP(CP_UTF8); _setmode(_fileno(stdout), _O_U8TEXT); }
-    bool doInstall = false, doUninstall = false, spellbook = false, narrator = false, noNarrator = false;
+    bool doInstall = false, doUninstall = false, narrator = false, noNarrator = false, kobold = false;
     std::wstring gameArg;
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
         if (_wcsicmp(a.c_str(), L"/install") == 0) doInstall = true;
         else if (_wcsicmp(a.c_str(), L"/uninstall") == 0) doUninstall = true;
-        else if (_wcsicmp(a.c_str(), L"/spellbook") == 0) spellbook = true;
+        else if (_wcsicmp(a.c_str(), L"/spellbook") == 0) {}                          // GiveSpellbook was retired in 1.5.0
+        else if (_wcsicmp(a.c_str(), L"/kobold") == 0) kobold = true;
         else if (_wcsicmp(a.c_str(), L"/nonarrator") == 0) noNarrator = true;
         else if (_wcsicmp(a.c_str(), L"/silent") == 0) g_silent = true;
         else if (_wcsicmp(a.c_str(), L"/game") == 0 && i + 1 < argc) gameArg = argv[++i];
@@ -488,7 +510,7 @@ int wmain(int argc, wchar_t** argv)
         if (g_silent) doInstall = true;
         else {
             Say(L"\n  [Enter] Install / update BiggerParty%s", narrator ? L" + Narrator (world events read aloud by recorded voices)" : L"");
-            Say(L"  [s]     ... + GiveSpellbook (multiclass-wizard spellbook fix)");
+            if (PayloadHasKind(5)) Say(L"  [k]     ... + Kobold race (a playable kobold, with a voice in cutscenes)");
             if (narrator) Say(L"  [n]     BiggerParty without the Narrator");
             Say(L"  [u]     Uninstall");
             Say(L"  [q]     Quit");
@@ -497,11 +519,16 @@ int wmain(int argc, wchar_t** argv)
             wchar_t c = (wchar_t)towlower(buf[0]);
             if (c == L'u') doUninstall = true;
             else if (c == L'q') return 0;
-            else { doInstall = true; if (c == L's' || c == L'a') spellbook = true; if (c == L'n') narrator = false; }
+            else {
+                doInstall = true;
+                if (c == L'k') kobold = true;
+                if (c == L'n') narrator = false;
+            }
         }
     }
+    kobold = kobold && PayloadHasKind(5);
 
-    int rc = doUninstall ? Uninstall(root) : Install(root, spellbook, narrator);
+    int rc = doUninstall ? Uninstall(root) : Install(root, narrator, kobold);
     if (rc == 0 && doInstall) Say(L"\nEveryone in a multiplayer session installs the same way. Start the game as usual - nothing else to launch.");
     Pause();
     return rc;

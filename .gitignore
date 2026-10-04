@@ -33,3 +33,9 @@ Narrator/text/
 Narrator/pack/
 Narrator/companion/dist/
 Narrator/companion/build/
+
+# the kobold voice (game text read aloud by an ElevenLabs voice): ships inside the release installer only
+Kobold/pack/
+
+# the kobold development workspace (voice tools, ledger, takes, tagging sheets with game text): private
+KoboldLab/

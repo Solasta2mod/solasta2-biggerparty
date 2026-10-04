@@ -1,5 +1,23 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
 
+**1.5.0** — the Kobold race, combat XP with companions, and GiveSpellbook retired. **The Kobold race** (optional:
+**k** in the installer) adds a playable kobold. Pick Kobold among the ancestries in character creation: the hero
+looks like the game's own kobolds, carries its weapons and gear, and has **Draconic Cry** (a bonus action that gives
+you and your allies advantage on attacks against the enemies within 10 feet of you until your next turn) and the
+**Kobold Legacy** (Craftiness, Defiance or Draconic Sorcery). In cutscenes a kobold hero's lines are spoken in a
+kobold voice (414 recorded lines so far, made with ElevenLabs and played by the Narrator's helper, so the voice
+needs the Narrator; a line without a recording keeps the game's voice). **Mod options** gets **Kobold race**
+(on/off from the next start; while it is off, kobold heroes show as gnomes) and **Kobold voice**, and
+**Ctrl+Shift+,** / **Ctrl+Shift+.** turn the voice down or up; settings are in `Kobold.ini`. The race adds an
+ancestry to the game's rules, so everyone in a session needs the same setting: the version reads `1.5.0+kobold`
+while it is on, and the version check flags a player whose setting differs. **Combat XP with companions:** the
+four-hero top-up now counts the companions who fight with the party (story guests such as Jebfa, summons), so each
+hero gets what it would in a party of four heroes with the same companions. Before, a companion along meant about
+a quarter more XP than that, and a party of four heroes with a guest got a top-up it should not have. **GiveSpellbook
+is retired:** the game fixed the multiclass spellbook bug it worked around, and its force key could hand a hero who
+never cast a spell a Wizard spellbook with spells. The installer no longer offers it; updating offers to remove an
+old copy, and uninstalling still removes it. Everyone in a session needs 1.5.0.
+
 **1.4.16** — the narration is complete: all 490 world-event passages are recorded (the 16 that were still missing,
 and final takes of 10 that had early ones). Stuck turns: a player whose heroes come one after another no longer
 gets a false hand-over. Ending the first hero's turn was counted as an End Turn click on the next hero's, so the

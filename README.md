@@ -9,8 +9,8 @@ six heroes and a hosted multiplayer lobby seat up to six players. Existing saves
 | ![host screen with Maximum Players 6](docs/host-screen-6-players.jpg) | ![six-seat lobby](docs/lobby-6-seats.jpg) | ![six character slots in multiplayer party creation](docs/party-creation-6-slots-multiplayer.jpg) |
 
 Also included: the **Narrator**, which reads the game's text-only world events aloud with a full cast of
-recorded voices (see below), and, optional, **GiveSpellbook**, a small fix for the multiplayer bug where
-multiclassing into Wizard does not grant the spellbook.
+recorded voices (see below), and, optional, the **Kobold race**: a playable kobold with a voice of its own
+in cutscenes (see below).
 
 > Early Access caveat: every game patch can change the code this mod patches. The mod checks the game
 > build at start-up and simply goes inert (with a note in `BiggerParty.log`) when it does not recognise
@@ -22,7 +22,7 @@ multiclassing into Wizard does not grant the spellbook.
 2. Close the game and run **`BiggerParty-Installer.exe`**. It finds Solasta II through Steam (or asks for
    the folder), installs the [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) script loader if you do not
    have it, and installs the mod. Press **Enter** for the default install (BiggerParty and the Narrator),
-   **s** to also get GiveSpellbook, or **n** for BiggerParty without the Narrator.
+   **k** to also get the Kobold race, or **n** for BiggerParty without the Narrator.
 3. Start the game normally. Everyone in a multiplayer session installs the same way.
 
 Uninstall: run the installer again and press **u**.
@@ -31,7 +31,7 @@ Uninstall: run the installer again and press **u**.
 
 | | |
 |---|---|
-| **Mod options** (title screen and pause menu, after Settings) | the mod's version (click it to see every player's in a multiplayer session) and its settings as menu buttons, each showing its value: a click changes it (the mod on/off, party size, players, enemy hit points +10% / −10%, four-hero XP, Narrator on/off and volume); **Back** returns to the menu |
+| **Mod options** (title screen and pause menu, after Settings) | the mod's version (click it to see every player's in a multiplayer session) and its settings as menu buttons, each showing its value: a click changes it (the mod on/off, party size, players, enemy hit points +10% / −10%, four-hero XP, Narrator on/off and volume, and with the Kobold race installed, the race on/off and the kobold voice); **Back** returns to the menu |
 | New Campaign | six character slots |
 | Multiplayer → Host | the *Players* selector offers 2–6; in party creation the extra slots start unassigned — joiners claim them, or the host takes them with the slot's assign button |
 | **Ctrl+Shift+Tab** | toggle the mod on/off (applies to the next new campaign / lobby) |
@@ -44,15 +44,16 @@ Uninstall: run the installer again and press **u**.
 
 Version check: in multiplayer every player's BiggerParty tells the host its version after each load, and the
 host answers with its own. A player on a different version, or on one that does not report (before 1.4.13, or
-no BiggerParty), gets a message in the game's information dialog, and the line goes to the history log.
+no BiggerParty), gets a message in the game's information dialog, and the line goes to the history log. The
+Kobold race counts as part of the version (it reads `1.5.0+kobold` while the race is on), so everyone in a
+session needs the same setting.
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI
 was only tested with 6; `EnemyHitPointsPercent=100`; `CombatExperienceAsIfFour=1`). Logs: `BiggerParty.log` (native patcher), `ue4ss\UE4SS.log` (Lua; wiped at every launch) and
 `BiggerParty-history.log` (the key lines, kept across launches — the one to send after a hang or crash).
 
-GiveSpellbook (host / single player only): **Ctrl+Delete** grants a Wizard spellbook to any hero whose
-spellcasting reports it missing; **Ctrl+Backspace** reports; **Ctrl+Shift+Delete** forces one on everyone
-without a book.
+GiveSpellbook was retired in 1.5.0: the game fixed the multiclass spellbook bug it worked around. The
+installer offers to remove an old copy.
 
 ## Narrator
 
@@ -82,6 +83,34 @@ party size and works in single player and multiplayer (each player hears their o
 installer installs it by default; **n** in its menu leaves it out. How it works:
 [the Narrator in the internals](docs/internals.md#narrator-voicing-the-world-events).
 
+## Kobold race (optional)
+
+**k** in the installer adds a playable kobold. Pick **Kobold** among the ancestries in character creation:
+the hero looks like the game's own kobolds, carries its weapons and gear, and has two traits of its own:
+
+- **Draconic Cry** (bonus action): until the start of your next turn, you and your allies have advantage on
+  attack rolls against the enemies within 10 feet of you. Uses equal to your proficiency bonus, regained
+  after a long rest.
+- **Kobold Legacy**, one of three: **Craftiness** (proficiency in Arcana, Investigation, Medicine, Sleight
+  of Hand or Survival), **Defiance** (advantage on saving throws to avoid or end being frightened) or
+  **Draconic Sorcery** (a cantrip from the Sorcerer spell list).
+
+In cutscenes a kobold hero's lines are spoken in a kobold voice: 414 recorded lines so far, made with
+ElevenLabs from the game's own text and played by the Narrator's helper, so the voice needs the Narrator.
+A line without a recording keeps the game's voice. The recordings ship in the installer, not in this
+repository.
+
+| | |
+|---|---|
+| **Mod options → Kobold race** | on / off, from the next start (while it is off, kobold heroes show as gnomes) |
+| **Mod options → Kobold voice** | each click steps the kobold voice down, 50% to 10%, then back to 50% |
+| **Ctrl+Shift+, / Ctrl+Shift+.** | kobold voice quieter / louder |
+
+Settings: `Kobold.ini` next to the game exe (`Enabled`, `VoiceLevel`); log: `Kobold.log`. The race adds an
+ancestry to the game's rules, so everyone in a multiplayer session needs the same setting (see the version
+check above). Under the hood the kobold is the game's hidden gnome ancestry, shown on the game's kobold
+model; only heroes change, so NPCs the game draws on the gnome body keep their own look.
+
 ## Enemy hit points
 
 Six heroes make fights easier. `EnemyHitPointsPercent` in `BiggerParty.ini` (default `100`, 50–500) scales
@@ -97,10 +126,12 @@ percentage in an earlier session is left as it is. There is no row for it on the
 
 The game pools a fight's XP (every hostile's challenge-rating value) and divides it by the number of
 contenders on the party's side, so with six heroes each gets a sixth instead of a quarter — two-thirds
-the levelling pace — and a guest fighting alongside (Jebfa) takes a share that goes nowhere. With
-`CombatExperienceAsIfFour=1` (the default) the host tops every hero up to a four-hero share when a battle
-ends, through the game's own XP grant, so the console shows the extra gain as a second line. `0` keeps
-the game's split. Quest and world-event XP ("Each party member receives…") were never split.
+the levelling pace. Companions fighting alongside (story guests such as Jebfa, summons) take a share too,
+which goes nowhere. With `CombatExperienceAsIfFour=1` (the default) the host tops every hero up, when a
+battle ends, to what it would get in a party of four heroes with the same companions, through the game's
+own XP grant, so the console shows the extra gain as a second line. A party of four heroes or fewer gets
+nothing added. `0` keeps the game's split. Quest and world-event XP ("Each party member receives…") were
+never split.
 
 ## Known limitations
 
@@ -118,8 +149,11 @@ the game's split. Quest and world-event XP ("Each party member receives…") wer
 - **Multiplayer sessions.** Each player's followers follow that player's selected hero, and the mod only
   ever touches the heroes your own player state controls. In a story scene each player gets the dialogue
   through a hero of theirs that the scene bound; a scene binds a fixed set of participants, so with six
-  heroes a player whose heroes were all left out sees no choice and does not vote. If a player drops and
-  rejoins, the game hands their heroes around; if a scene then fails to open for someone, save and reload.
+  heroes a player whose heroes were all left out sees no choice and does not vote. When the hero a player
+  has selected is not in the scene but another of theirs is, the host hands them that hero for the scene;
+  now and then the hand-over arrives too late, and that player sees the scene without the choices. Each
+  choice then waits about 30 seconds for their vote before it goes on. If a player drops and rejoins, the
+  game hands their heroes around; if a scene then fails to open for someone, save and reload.
 - **A turn that cannot be ended (multiplayer).** Now and then a player's End Turn does nothing, while the host
   can end that turn, and handing the hero to the host and back (the session screen's take and give) clears it.
   The mod does that by itself: the stuck player's copy notices it (End Turn clicked and the turn still running a
@@ -172,7 +206,9 @@ BiggerParty\installer\build.bat                        -> dist\BiggerParty-Insta
 `<UE4SS dir>` is an extracted UE4SS *experimental* release (UE 5.6 support), i.e. the folder that
 contains `dwmapi.dll` and `ue4ss\`. The Narrator's helper is built first with `Narrator\companion\build.bat`
 (a Python venv with `pyinstaller`; see the script), and the voice pack goes in `Narrator\pack` (not in the
-repository: it is the game's text read aloud).
+repository: it is the game's text read aloud). The Kobold race is `Kobold\Scripts\main.lua` with its default
+`Kobold.ini`; its voice (an add-on pack of the Narrator's: `index.json`, `lines.txt`, `roles.txt` and the
+recordings) goes in `Kobold\pack`, likewise not in the repository.
 
 `tools\` holds the reverse-engineering helpers used to find the patch sites (PDB symbol/offset scanners,
 a capstone-based disassembler, pak/utoc readers). After a game update, `pdb_pub.py` + `disasm.py` are how

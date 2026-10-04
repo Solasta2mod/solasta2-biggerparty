@@ -1,6 +1,7 @@
 """Stage the installer payload and generate payload.rc / payload_index.h.
 
-Payload kinds: 0 = UE4SS (stock experimental build), 1 = BiggerParty, 2 = GiveSpellbook, 3 = docs, 4 = Narrator.
+Payload kinds: 0 = UE4SS (stock experimental build), 1 = BiggerParty, 2 = GiveSpellbook (retired in 1.5.0, unused),
+3 = docs, 4 = Narrator, 5 = Kobold (the race mod, Kobold.ini and its voice, Narrator/packs/kobold).
 The Narrator companion (Narrator/companion/dist/SolastaNarrator.exe) must be built first (see
 Narrator/companion/build.bat), and the recorded voice pack must be in Narrator/pack (index.json + one MP3 per
 passage; it is game text read aloud, so it ships in the installer but never in the repository).
@@ -38,12 +39,7 @@ dist = os.path.join(ROOT, "dist")
 for rel in ["version.dll", "BiggerParty.ini", "ue4ss/Mods/BiggerParty/Scripts/main.lua", "ue4ss/Mods/BiggerParty/enabled.txt"]:
     src = os.path.join(dist, rel.replace("/", os.sep)); dst = os.path.join(STAGE, rel.replace("/", os.sep))
     os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((1, rel))
-# 2: GiveSpellbook
-gs = os.path.join(WS, "GiveSpellbook")
-for rel in ["Scripts/main.lua", "enabled.txt"]:
-    src = os.path.join(gs, rel.replace("/", os.sep)); dst_rel = "ue4ss/Mods/GiveSpellbook/" + rel
-    dst = os.path.join(STAGE, dst_rel.replace("/", os.sep))
-    os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((2, dst_rel))
+# 2: GiveSpellbook - retired in 1.5.0 (the game fixed the multiclass spellbook bug); the kind stays unused
 # 3: docs
 shutil.copy2(os.path.join(dist, "README.txt"), os.path.join(STAGE, "BiggerParty-README.txt")); entries.append((3, "BiggerParty-README.txt"))
 # 4: Narrator (mod, companion program and the recorded voice pack)
@@ -64,6 +60,25 @@ os.makedirs(pack_stage, exist_ok=True)
 for fn in ["index.json"] + files:
     shutil.copy2(os.path.join(pack, fn), os.path.join(pack_stage, fn)); entries.append((4, "Narrator/pack/" + fn))
 print("voice pack: %d recordings of %d passages" % (len(files), len(index.get("all", [])) or len(files)))
+# 5: Kobold (the race mod, its default settings, and the kobold voice: an add-on pack of the Narrator's, made with
+# KoboldLab's voice tools and staged into Kobold/pack, which git ignores - game text read aloud)
+kb = os.path.join(WS, "Kobold")
+for src_rel, dst_rel in [("Scripts/main.lua", "ue4ss/Mods/Kobold/Scripts/main.lua"), ("enabled.txt", "ue4ss/Mods/Kobold/enabled.txt"),
+                         ("Kobold.ini", "Kobold.ini")]:
+    src = os.path.join(kb, src_rel.replace("/", os.sep)); dst = os.path.join(STAGE, dst_rel.replace("/", os.sep))
+    if not os.path.exists(src): print("missing " + src); sys.exit(1)
+    os.makedirs(os.path.dirname(dst), exist_ok=True); shutil.copy2(src, dst); entries.append((5, dst_rel))
+kpack = os.path.join(kb, "pack")
+if not os.path.exists(os.path.join(kpack, "index.json")): print("missing " + os.path.join(kpack, "index.json") + " (stage the kobold voice first)"); sys.exit(1)
+with open(os.path.join(kpack, "index.json"), encoding="utf-8") as f: kindex = json.load(f)
+kfiles = [e["file"] for e in kindex.get("passages", [])]
+absent = [fn for fn in kfiles if not os.path.exists(os.path.join(kpack, fn))]
+if absent: print("kobold voice: %d recording(s) listed in index.json are missing, e.g. %s" % (len(absent), absent[0])); sys.exit(1)
+kstage = os.path.join(STAGE, "Narrator", "packs", "kobold")
+os.makedirs(kstage, exist_ok=True)
+for fn in ["index.json", "lines.txt", "roles.txt"] + kfiles:
+    shutil.copy2(os.path.join(kpack, fn), os.path.join(kstage, fn)); entries.append((5, "Narrator/packs/kobold/" + fn))
+print("kobold voice: %d recordings" % len(kfiles))
 
 # zero-byte files (enabled.txt markers) cannot be embedded as resources: give them one byte
 for _, rel in entries:

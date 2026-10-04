@@ -383,6 +383,38 @@ a cast file made from the extracted text, pacing itself to the API's request lim
 stopped. The extracted text, the cast and the recordings stay out of the repository (they are the game's
 text); the recordings ship inside the release's installer.
 
+## Combat experience
+
+`ABattle::ConcludeBattle` divides the battle's `EncounterXPAmount` by the contenders on the party's team and
+gives each of them that share. The host watches the battles (ten times a second, and the game's end-of-battle
+call) and, once one has ended, grants each hero the difference to a four-hero share through the game's
+`FunctorAsync_GrantExperience`. Heroes are the party-team contenders with a `HeroProgressComponent`; the rest
+(story guests, summons) are companions, who count in the game's divisor and get nothing either way. The share is
+therefore `pool / (4 + companions)`, what a party of four heroes with the same companions would get, and a party
+of four heroes or fewer gets nothing added.
+
+## The Kobold race
+
+The game ships a gnome ancestry it does not offer (`bEnumerableForUser` false) and kobold monster models. The
+Kobold mod (`Kobold/Scripts/main.lua`) offers the gnome as Kobold, with its own title, texts and picture, and
+builds its traits at runtime from cloned game definitions added to the asset manager's `DefinitionsMap`:
+Draconic Cry is a power whose ability takes over the hidden Dragonborn's silver breath (built only while the
+game keeps the Dragonborn hidden), and the Kobold Legacy is a choice of three feature sets (Craftiness;
+Defiance, the halfling's Brave effect; Draconic Sorcery, a Sorcerer cantrip). A kobold hero's own body keeps
+animating but is not drawn: a second skeletal mesh with the kobold body and armour, driven by the kobold
+animation blueprint, rides on it, mirrors its montages and carries its weapons. Dialogue cameras and the
+portrait capture aim at the hidden body's bones, so that body is lowered while one of them looks at it. Only
+heroes become kobolds — an actor whose simulation actor owns a `HeroIdentityComponent` — because the game
+draws some of its own NPCs on the gnome body too.
+
+**The kobold voice.** A cutscene's speakers are dialogue roles (`Dialogue.Participant.Party.A`–`D`), bound to
+heroes by the scene's participant plan, so the lines a hero speaks depend on its seat and family role. Each
+take is a 2D `AudioComponent`; the scene's `MovieSceneVoiceTrack` gives the take's role and the dialogue
+manager's bindings the hero playing it. For a kobold the mod turns the game's take down with `AdjustVolume`
+(the sequencer sets `VolumeMultiplier` again every frame) and queues the kobold's recording to the Narrator's
+helper, which plays it from an add-on pack: `Narrator\packs\kobold` (`index.json`, `lines.txt` with each
+line's normalised text, take name and length, `roles.txt`). A line without a recording keeps the game's take.
+
 ## Re-signing after a game patch
 
 1. Point the tools at the new build and confirm each signature still matches exactly once:

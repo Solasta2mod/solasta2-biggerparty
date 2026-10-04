@@ -6,9 +6,12 @@ matched to the text on screen. A line the pack has no recording of is not read. 
 multimedia API; nothing else is installed and nothing goes over the network.
 
 Files (next to SolastaNarrator.exe, in <game>\\Brimstone\\Binaries\\Win64\\Narrator\\):
-  queue.txt      written by the mod: one JSON object per line ({"kind": "...", "text": "..."} or {"kind": "stop"})
+  queue.txt      written by the mod: one JSON object per line ({"kind": "...", "text": "..."} or {"kind": "stop"});
+                 a "sample" may carry "gain" (0..1): that clip plays at that volume instead of PlaybackVolume
   narrator.ini   Enabled=1 (Ctrl+Shift+M in the game)  PlaybackVolume=100 (Ctrl+Shift+= / Ctrl+Shift+-)
-  pack\\         the recordings
+  pack\\         the recordings (the index is read again when pack\\index.json changes)
+  packs\\<name>\\ add-on packs of other mods (their own index.json + recordings), played only when a mod asks for
+                 a "sample" of one of their lines; a narrator update replaces pack\\ and leaves packs\\ alone
   narrator.log   what was played, and any errors
 """
 import ctypes, difflib, json, math, os, re, struct, sys, threading, time, queue, wave
@@ -77,8 +80,9 @@ class Player:
         self.level = 1000                            # MCI volume, 0..1000; applied by the worker thread
         self.lock = threading.Lock()
         threading.Thread(target=self.run, daemon=True).start()
-    def play(self, path, gen):
-        self.q.put((path, gen))
+    def play(self, path, gen, level=None):
+        """level: this clip's own MCI volume (0..1000), kept whatever the volume keys do; None = the playback volume."""
+        self.q.put((path, gen, level))
     def stop(self):
         with self.lock:
             self.gen += 1
@@ -93,17 +97,17 @@ class Player:
             return gen != self.gen
     def run(self):
         while True:
-            path, gen = self.q.get()
+            path, gen, level = self.q.get()
             if self.stale(gen): continue
             err, _ = mci('open "%s" type mpegvideo alias narr' % path)
             if err:
                 log("cannot open %s (mci %d)" % (path, err)); continue
-            applied = self.level
+            applied = self.level if level is None else level
             mci("setaudio narr volume to %d" % applied)
             mci("play narr")
             started, seen = time.time(), False
             while not self.stale(gen):               # a stop (new generation) cuts the clip here
-                if self.level != applied:            # the volume keys: the line playing follows at once
+                if level is None and self.level != applied:   # the volume keys: the line playing follows at once
                     applied = self.level; mci("setaudio narr volume to %d" % applied)
                 err, mode = mci("status narr mode")
                 if err: break
@@ -160,6 +164,15 @@ def process_name(pid):
     return None
 
 PACK = os.path.join(HERE, "pack")
+PACKS = os.path.join(HERE, "packs")      # add-on packs: packs\<name>\index.json (samples only, never narration)
+
+def pack_indexes():
+    """The index files of the narration pack and of every add-on pack."""
+    out = [os.path.join(PACK, "index.json")]
+    if os.path.isdir(PACKS):
+        for sub in sorted(os.listdir(PACKS)):
+            out.append(os.path.join(PACKS, sub, "index.json"))
+    return out
 
 def norm_text(t):
     """Matching key: lower-case letters and digits, single spaces (tools/render_pack.py makes the same)."""
@@ -192,8 +205,8 @@ class Pack:
     WAIT = 3.5
     GAP = 2.5          # a pause this long (a choice being made) starts a new block of text
     PROBE_WORDS = 6    # an opening still being typed starts its recording once this long and unique in the game
-    def __init__(self, folder):
-        self.entries, self.kind, self.all = [], None, []
+    def __init__(self, folder, addons=None):
+        self.entries, self.kind, self.all, self.extra = [], None, [], []
         index = os.path.join(folder, "index.json")
         if os.path.exists(index):
             try:
@@ -204,12 +217,22 @@ class Pack:
                 self.all = sorted(set(data.get("all", [])))      # every passage in the game, recorded or not
             except Exception as e:
                 log("pack index unreadable: %r" % (e,))
+        # add-on packs: other mods' recordings of their own lines, found by exact text only (a "sample")
+        for sub in (sorted(os.listdir(addons)) if addons and os.path.isdir(addons) else []):
+            idx = os.path.join(addons, sub, "index.json")
+            if not os.path.exists(idx): continue
+            try:
+                for e in json.load(open(idx, encoding="utf-8")).get("passages", []):
+                    path = os.path.join(addons, sub, e["file"])
+                    if os.path.exists(path): self.extra.append((e["norm"], path))
+            except Exception as e:
+                log("add-on pack %s unreadable: %r" % (sub, e))
         self.reset()
     def __len__(self): return len(self.entries)
     def exact(self, raw):
         """The recording of exactly this text, if the pack has one (an announcement recorded with the pack)."""
         n = norm_text(raw)
-        return next((path for norm, path in self.entries if norm == n), None)
+        return next((path for norm, path in self.entries + self.extra if norm == n), None)
     def reset(self):
         self.current, self.pending, self.since, self.last = None, [], 0.0, 0.0
     def _cands(self, joined):
@@ -274,12 +297,13 @@ def game_running():
     pids = running_pids(GAME_EXE)
     return True if pids is None else len(pids) > 0
 
-def speak(text, player, gen, pack=None, sample=False):
+def speak(text, player, gen, pack=None, sample=False, level=None):
     """A line with no recording is not read. An announcement (a volume key) plays its recording if the pack
-    has one, otherwise the chime."""
+    has one, otherwise the chime; level = its own volume (a kobold hero's line follows the game's voice volume)."""
     if sample:
         rec = pack.exact(text) if pack else None
-        log(("pack: " if rec else "chime: ") + text[:80]); player.play(rec or chime_path(), gen)
+        log(("pack: " if rec else "chime: ") + text[:80] + ("" if level is None else " (volume %d)" % level))
+        player.play(rec or chime_path(), gen, level)
     else:
         log("no recording, not read: " + text[:80])
 
@@ -308,9 +332,21 @@ def main():
         player.set_level(int(cfg.get("PlaybackVolume", "100") or 100))
     except ValueError:
         pass
-    pack = Pack(PACK)
-    if len(pack): log("pack: %d recorded passages" % len(pack))
-    else: log("no voice pack in %s: nothing will be read" % PACK); pack = None
+    def load_pack(why):
+        p = Pack(PACK, PACKS)
+        if len(p) or p.extra:
+            log("pack%s: %d recorded passages%s" % (why, len(p), (", %d lines in add-on packs" % len(p.extra)) if p.extra else ""))
+            return p
+        log("no voice pack in %s: nothing will be read" % PACK)
+        return None
+    pack = load_pack("")
+    def index_stamp():
+        st = []
+        for path in pack_indexes():
+            try: st.append((path, os.path.getmtime(path)))
+            except OSError: pass
+        return tuple(st)
+    stamp, last_stamp_check = index_stamp(), time.time()
     # start at the end of whatever is already in the queue file
     try:
         pos = os.path.getsize(QUEUE)
@@ -364,9 +400,20 @@ def main():
                 if pack and kind in ("description", "outcome"):
                     for act in pack.feed(text, kind): run_action(act, player, gen)
                     continue
-                speak(text, player, gen, pack, sample=(kind == "sample"))
+                level = None
+                if kind == "sample" and item.get("gain") is not None:
+                    try: level = int(round(max(0.0, min(1.0, float(item["gain"]))) * 1000))
+                    except (TypeError, ValueError): log("bad gain: %r" % (item.get("gain"),))
+                speak(text, player, gen, pack, sample=(kind == "sample"), level=level)
         if pack:
             for act in pack.tick(): run_action(act, player, gen)
+        if time.time() - last_stamp_check > 2:          # recordings added while the game runs
+            last_stamp_check = time.time()
+            s = index_stamp()
+            if s != stamp:
+                stamp = s
+                fresh = load_pack(" reloaded")
+                if fresh: pack = fresh
         if time.time() - last_check > 10:
             last_check = time.time()
             if not game_running():
@@ -375,7 +422,7 @@ def main():
                 try: os.remove(LOCK)
                 except OSError: pass
                 return
-        time.sleep(0.2)
+        time.sleep(0.05)                                 # a kobold hero's line starts with the game's take
 
 if __name__ == "__main__":
     try:
