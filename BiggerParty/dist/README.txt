@@ -1,4 +1,4 @@
-BiggerParty 1.5.1 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670 / CL-114967)
+BiggerParty 1.5.2 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670 / CL-114967 and the 11 Oct 2026 patch)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.
@@ -22,7 +22,7 @@ IN GAME
                          volume, Kobold race on/off and the kobold voice); a click changes one, Back returns
   Version check       -> in multiplayer, a player whose BiggerParty differs from the host's (or is older than
                          1.4.13) gets a message; everyone in a session needs the same version, and the same
-                         Kobold race setting (the version reads "1.5.1+kobold" while the race is on)
+                         Kobold race setting (the version reads "1.5.2+kobold" while the race is on)
   New Campaign        -> six character slots
   Inventory/character -> six portraits (Tab or click to switch hero)
   Story dialogues     -> work with six heroes (four take a family role; two sit that scene out) (all "Create Character");

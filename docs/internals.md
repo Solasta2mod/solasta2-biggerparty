@@ -53,7 +53,10 @@ Source: [`BiggerParty/src/version_proxy.cpp`](../BiggerParty/src/version_proxy.c
 Everything that is level content or UI, none of which can be done by patching a literal:
 
 - **Creation level:** spawns extra `PartyAvatarSpawn`-tagged `TargetPoint`s, extrapolating the row of the
-  existing four markers so heroes 5+ stand in line. Host only.
+  existing four markers so heroes 5+ stand in line. Host only. The game gives slot k the k-th marker in *name*
+  order and lays the cards out left to right in slot order, so every extra marker goes to the right of the last
+  one, the spawned ones placed in their own name order (one on each side put slot 5 left of seat 1 from the
+  11 Oct 2026 patch on), and the creation camera slides to the middle of the longer row.
 - **Creation screen:** shrinks the `SizeBox` width overrides inside the character cards so the row fits, and
   widens the creation camera's FOV so the outer models stay in frame.
 - **Multiplayer host screen:** extends the *Players* radio group to `2..PartySize`.

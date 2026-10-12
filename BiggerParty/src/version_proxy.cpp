@@ -15,7 +15,7 @@
 // when it changes, so the in-game toggle (handled by the Lua half) applies without a restart.
 //
 // Signatures verified against builds CL-112340 (2026-09-10), CL-112436 (2026-09-14), CL-113670 (2026-09-21)
-// and CL-114967 (2026-10-01).
+// and CL-114967 (2026-10-01), and the 2026-10-11 patch (all four still match once).
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

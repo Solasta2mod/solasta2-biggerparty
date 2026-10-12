@@ -1,6 +1,6 @@
 # BiggerParty — 6-hero parties and 6-player co-op for Solasta II
 
-An unofficial mod for **Solasta II** (Early Access, builds CL-112340, CL-112436, CL-113670 and CL-114967 — the 1 Oct 2026 patch) that lets a new campaign have up to
+An unofficial mod for **Solasta II** (Early Access, builds CL-112340, CL-112436, CL-113670, CL-114967 — the 1 Oct 2026 patch — and the 11 Oct 2026 patch) that lets a new campaign have up to
 six heroes and a hosted multiplayer lobby seat up to six players. Existing saves are untouched: a
 4-hero save loads exactly as vanilla.
 
@@ -45,7 +45,7 @@ Uninstall: run the installer again and press **u**.
 Version check: in multiplayer every player's BiggerParty tells the host its version after each load, and the
 host answers with its own. A player on a different version, or on one that does not report (before 1.4.13, or
 no BiggerParty), gets a message in the game's information dialog, and the line goes to the history log. The
-Kobold race counts as part of the version (it reads `1.5.1+kobold` while the race is on), so everyone in a
+Kobold race counts as part of the version (it reads `1.5.2+kobold` while the race is on), so everyone in a
 session needs the same setting.
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI

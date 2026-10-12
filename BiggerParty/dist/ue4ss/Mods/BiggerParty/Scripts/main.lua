@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.5.1"
+BIGGERPARTY_VERSION = "1.5.2"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -248,11 +248,17 @@ end
 local function Vec(v) return { X = v.X, Y = v.Y, Z = v.Z } end
 local function Rot(r) return { Pitch = r.Pitch, Yaw = r.Yaw, Roll = r.Roll } end
 
+-- The game reads the markers in name order (the level's four, then the ones spawned here) and gives slot k the
+-- k-th, and the cards run left to right in slot order. So every extra marker goes on to the right of the level's
+-- last one, the spawned ones placed in their own name order, and the creation camera later slides over by the shift
+-- of the row's middle (CREATION_SHIFT) so the six stay centred. (Placing one each side put slot 5 left of seat 1.)
+CREATION_SHIFT = nil
 local function SpawnMarkers(worldContext, markers, count, spawnTag)
     if count <= 0 or #markers < 2 then return 0 end
     local statics = StaticFindObject("/Script/Engine.Default__GameplayStatics")
     local tpClass = StaticFindObject("/Script/Engine.TargetPoint")
     if not (statics and statics:IsValid() and tpClass and tpClass:IsValid()) then Out("markers: GameplayStatics/TargetPoint missing") return 0 end
+    table.sort(markers, function(x, y) return ShortName(x:GetFullName()) < ShortName(y:GetFullName()) end)
     local locs, rots = {}, {}
     for i, m in ipairs(markers) do
         local okl, l = pcall(function() return m:K2_GetActorLocation() end)
@@ -262,25 +268,33 @@ local function SpawnMarkers(worldContext, markers, count, spawnTag)
     end
     local n = #markers
     local stepR = { X = locs[n].X - locs[n-1].X, Y = locs[n].Y - locs[n-1].Y, Z = locs[n].Z - locs[n-1].Z }
-    local stepL = { X = locs[1].X - locs[2].X, Y = locs[1].Y - locs[2].Y, Z = locs[1].Z - locs[2].Z }
-    local spawned, r, l = 0, 0, 0
+    local made = {}
     for i = 1, count do
-        local loc, rot
-        if i % 2 == 1 then r = r + 1; loc = { X = locs[n].X + stepR.X * r, Y = locs[n].Y + stepR.Y * r, Z = locs[n].Z + stepR.Z * r }; rot = rots[n]
-        else l = l + 1; loc = { X = locs[1].X + stepL.X * l, Y = locs[1].Y + stepL.Y * l, Z = locs[1].Z + stepL.Z * l }; rot = rots[1] end
+        local loc = { X = locs[n].X + stepR.X * i, Y = locs[n].Y + stepR.Y * i, Z = locs[n].Z + stepR.Z * i }
         local ok, err = pcall(function()
             local xf = { Rotation = { X = 0, Y = 0, Z = 0, W = 1 }, Translation = loc, Scale3D = { X = 1, Y = 1, Z = 1 } }
             local actor = statics:BeginDeferredActorSpawnFromClass(worldContext, tpClass, xf, 1, nil, 0)
             if not (actor and actor:IsValid()) then error("spawn returned nothing") end
             statics:FinishSpawningActor(actor, xf, 0)
-            actor:K2_TeleportTo(loc, rot)
             local tags = actor.Tags
             tags[#tags + 1] = FName(spawnTag)
             if NameOf(tags[#tags]) ~= spawnTag then error("tag did not stick") end
+            made[#made + 1] = actor
         end)
-        if ok then spawned = spawned + 1 else Out("markers: spawn %d failed: %s", i, tostring(err)) end
+        if not ok then Out("markers: spawn %d failed: %s", i, tostring(err)) end
     end
-    return spawned
+    -- the spawned markers in the game's (name) order, each one step further right
+    table.sort(made, function(x, y) return ShortName(x:GetFullName()) < ShortName(y:GetFullName()) end)
+    local sum = { X = 0, Y = 0, Z = 0 }
+    for k, actor in ipairs(made) do
+        local loc = { X = locs[n].X + stepR.X * k, Y = locs[n].Y + stepR.Y * k, Z = locs[n].Z + stepR.Z * k }
+        pcall(function() actor:K2_TeleportTo(loc, rots[n]) end)
+        local c = n + 1 - (n + 1) / 2 + k - 1          -- this marker's offset from the old row's middle, in steps
+        sum.X, sum.Y, sum.Z = sum.X + stepR.X * c, sum.Y + stepR.Y * c, sum.Z + stepR.Z * c
+    end
+    local total = n + #made
+    if #made > 0 then CREATION_SHIFT = { X = sum.X / total, Y = sum.Y / total, Z = 0 } end
+    return #made
 end
 
 local function EnsureMarkers(pcm)
@@ -357,6 +371,15 @@ local function WidenCamera()
         if pcall(function() cam:SetFieldOfView(fov * mult) end) then
             CAMERA_DONE[vt:GetAddress()] = true
             Out("camera: %s FOV %.1f -> %.1f", ShortName(vt:GetFullName()), fov, fov * mult)
+            -- the extra seats are all on the right: slide over to the row's new middle
+            local sh = CREATION_SHIFT
+            local at = sh and Try(function() return vt:K2_GetActorLocation() end)
+            local rot = at and Try(function() return vt:K2_GetActorRotation() end)
+            if at and rot then
+                local to = { X = at.X + sh.X, Y = at.Y + sh.Y, Z = at.Z }
+                local okT = pcall(function() vt:K2_TeleportTo(to, Rot(rot)) end)
+                Out("camera: slid %.0f cm to the middle of the six seats (%s)", math.sqrt(sh.X * sh.X + sh.Y * sh.Y), okT and "ok" or "refused")
+            end
         end
     end
 end
@@ -1971,7 +1994,26 @@ local function Report()
         end
     end
     for _, pcm in ipairs(Instances("PartyCreationManagerComponent")) do
-        Out("creation: EditionCharacters=%d", Count(Try(function() return pcm.EditionCharacters end)))
+        local ec = Try(function() return pcm.EditionCharacters end)
+        Out("creation: EditionCharacters=%d current=%s", Count(ec), tostring(Try(function() return pcm.CurrentCharacterIndex end)))
+        local ready = Try(function() return pcm.CharactersReadiness end)
+        for i = 1, math.max(Count(ec), 0) do
+            local e = Try(function() return ec[i] end)
+            local function nm(o) return (o and o.IsValid and o:IsValid()) and ShortName(o:GetFullName()) or "none" end
+            local ra, av, sp = Try(function() return e.RulesetActor end), Try(function() return e.Avatar end), Try(function() return e.CharacterSpecterActor end)
+            local t = Try(function() return e.Transform.Translation end)
+            local at = av and av.IsValid and av:IsValid() and Try(function() return av:K2_GetActorLocation() end)
+            Out("creation slot %d: ruleset=%s avatar=%s specter=%s pending=%s replicate=%s ready=%s transform=(%.0f %.0f %.0f) avatar at (%s)", i,
+                nm(ra), nm(av), nm(sp), tostring(Try(function() return e.bHasPendingAvatar end)), tostring(Try(function() return e.bShouldReplicate end)),
+                tostring(Try(function() return ready[i] end)), t and t.X or 0, t and t.Y or 0, t and t.Z or 0,
+                at and string.format("%.0f %.0f %.0f", at.X, at.Y, at.Z) or "-")
+        end
+        local owner = Try(function() return pcm:GetOwner() end)
+        local tag = NameOf(Try(function() return pcm.SpawnAvatarTransformTag end))
+        for k, m in ipairs((owner and tag ~= "nil") and TaggedActorsInLevelOf(owner, tag) or {}) do
+            local l = Try(function() return m:K2_GetActorLocation() end)
+            Out("creation marker %d: %s at (%s)", k, ShortName(m:GetFullName()), l and string.format("%.0f %.0f %.0f", l.X, l.Y, l.Z) or "?")
+        end
     end
     for _, vm in ipairs(Instances("GameSessionViewModel")) do
         Out("session: CharacterSlots=%d PlayerSlots=%d IsMultiplayer=%s AmIHost=%s",

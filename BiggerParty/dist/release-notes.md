@@ -1,4 +1,11 @@
-For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026).
+For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026), and the 11 Oct 2026 patch.
+
+**1.5.2** — works on the 11 Oct 2026 patch, with the fifth and sixth heroes in their places in party creation. The
+patch sites are unchanged, but the game now hands the extra creation markers to slots in name order, so the hero
+made on card 5 stood to the left of seat 1. Both extra markers now go to the right of seat 4, in the order the game
+reads them, and the creation camera slides to the middle of the six seats. Ctrl+Shift+Backspace's status report now
+lists each creation slot (its character, its model, where the game places it) and the markers. Everyone in a
+session needs 1.5.2, with the same Kobold race setting.
 
 **1.5.1** — heroes a scene leaves behind are brought along, and the kobold log starts fresh at every launch. A story
 scene with room for four heroes moves only those four: with six, a scene that took the party into a fort and closed

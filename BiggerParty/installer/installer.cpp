@@ -30,7 +30,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.5.1 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967)";
+static const wchar_t* kVersion = L"BiggerParty 1.5.2 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967 / 11 Oct 2026)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
