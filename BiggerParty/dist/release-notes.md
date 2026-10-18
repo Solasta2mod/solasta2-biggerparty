@@ -1,5 +1,16 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026), and the 11 Oct 2026 patch.
 
+**1.5.3** — switching the Kobold race off no longer crashes party creation, and empty creation slots are repaired.
+With **Kobold race: Off**, the Kobold mod stopped before building anything, so a saved kobold hero's Kobold Legacy
+choice had no definition and the game crashed when party creation loaded the saved heroes. Switched off, the mod now
+still registers Draconic Cry and the Kobold Legacy (and nothing else: Kobold is not offered and kobold heroes show
+as gnomes). On the 11 Oct 2026 patch a party-creation slot can be left with no character at all (its card offers
+Create Character forever, Start Adventure never comes, and creating a hero there crashes the game); the host now puts
+a blank character back within seconds, the way the game's own slot clear does. Fill Party gives every hero a
+different ancestry and the game offers four, so it fills four slots (five with the Kobold race): create or pick
+premades for the rest. Ctrl+Shift+Backspace's report also lists each party-creation seat's player and each hero's
+name, ancestry and classes. Everyone in a session needs 1.5.3, with the same Kobold race setting.
+
 **1.5.2** — works on the 11 Oct 2026 patch, with the fifth and sixth heroes in their places in party creation. The
 patch sites are unchanged, but the game now hands the extra creation markers to slots in name order, so the hero
 made on card 5 stood to the left of seat 1. Both extra markers now go to the right of seat 4, in the order the game

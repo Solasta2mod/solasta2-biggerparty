@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.5.2"
+BIGGERPARTY_VERSION = "1.5.3"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its
@@ -2007,6 +2007,17 @@ local function Report()
                 nm(ra), nm(av), nm(sp), tostring(Try(function() return e.bHasPendingAvatar end)), tostring(Try(function() return e.bShouldReplicate end)),
                 tostring(Try(function() return ready[i] end)), t and t.X or 0, t and t.Y or 0, t and t.Z or 0,
                 at and string.format("%.0f %.0f %.0f", at.X, at.Y, at.Z) or "-")
+            -- what the game's validity check (UCharacterEditionHelpers::IsValid) needs, read off the hero's components
+            if ra and ra.IsValid and ra:IsValid() then
+                local function comp(cls) local c = StaticFindObject("/Script/Brimstone." .. cls); return c and Try(function() return ra:GetComponentByClass(c) end) end
+                local hid, hpr = comp("HeroIdentityComponent"), comp("HeroProgressComponent")
+                local function S(f) local ok, v = pcall(f); if not ok then return "?" end; return v == nil and "nil" or tostring(v) end
+                Out("creation slot %d hero: first name '%s', biography %s chars, ancestry %s, classes %s", i,
+                    hid and S(function() return hid.IdentityData.FirstName:ToString() end) or "no identity",
+                    hid and S(function() return #(hid.IdentityData.Biography:ToString()) end) or "-",
+                    hid and S(function() return hid.CustomizationData.AncestryTag.TagName:ToString() end) or "-",
+                    hpr and S(function() return #hpr.ProgressData.ClassesHistory end) or "no progress")
+            end
         end
         local owner = Try(function() return pcm:GetOwner() end)
         local tag = NameOf(Try(function() return pcm.SpawnAvatarTransformTag end))
@@ -2019,6 +2030,17 @@ local function Report()
         Out("session: CharacterSlots=%d PlayerSlots=%d IsMultiplayer=%s AmIHost=%s",
             Count(Try(function() return vm.CharacterSlots end)), Count(Try(function() return vm.PlayerSlots end)),
             tostring(Try(function() return vm.IsMultiplayer end)), tostring(Try(function() return vm.AmIHost end)))
+        local cs = Try(function() return vm.CharacterSlots end)
+        for i = 1, math.max(Count(cs), 0) do
+            local sv = Try(function() return cs[i] end)
+            local cp = sv and Try(function() return sv:GetControllingPlayer() end)
+            local ps = cp and Try(function() return cp:GetBoundPlayerState() end)
+            local ch = sv and Try(function() return sv.Character end)
+            Out("session: character slot %d: controlled by me %s, by a player %s, player %s, character %s", i,
+                tostring(sv and Try(function() return sv:GetIsControlledByMe() end)), tostring(sv and Try(function() return sv:GetIsControlledByPlayer() end)),
+                (ps and ps.IsValid and ps:IsValid()) and (Str(Try(function() return ps:GetPlayerName() end)) or ShortName(ps:GetFullName())) or "none",
+                (ch and ch.IsValid and ch:IsValid()) and ShortName(ch:GetFullName()) or "?")
+        end
     end
     for _, pc in ipairs(Instances("PartyComponent")) do
         Out("party: %d members", Count(Try(function() return pc.Party end)))
@@ -2886,10 +2908,63 @@ for _, mod in ipairs({ "/Script/Brimstone.", "/Script/DialogueSystem.", "/Script
     if okB then break end
 end
 
+-- A creation slot left without its character. On the 11 Oct 2026 patch, Fill Party with six slots can leave one slot
+-- with no character at all: its card offers "Create Character", Start Adventure never comes, and creating a hero there
+-- crashes the game (its analytics read the slot's missing character). The repair is what the game's own slot clear
+-- (ClearEditionActor) does after it has destroyed a slot's character: CreateBlankEditionActor("Party Creation Actor",
+-- context 1, no template) - the creation manager is a UCharacterEditionComponent - put in the slot, then the party
+-- screen re-reads its slots (ReadCharacterEditionSlots). An empty slot is exactly that: a blank character, no model.
+-- (ClearEditionActor itself cannot be used: it reads the character it is given, and here there is none.) Host, once a
+-- slot has been empty for 1.5 s (never in the middle of the game's own work), at most every 3 s. One table: the main
+-- chunk is at Lua's limit of 200 locals.
+CREATION_REPAIR = { since = {}, last = 0, failed = 0 }
+function CREATION_REPAIR.Check()
+    local pcm = nil
+    for _, c in ipairs(Instances("PartyCreationManagerComponent")) do pcm = c break end
+    local ec = pcm and Try(function() return pcm.EditionCharacters end)
+    local n = Count(ec)
+    if n <= 0 then CREATION_REPAIR.since = {} return end
+    if not IsHost() then return end
+    local empty = nil
+    for i = 1, n do
+        local ra = Try(function() return ec[i].RulesetActor end)
+        if ra and ra.IsValid and ra:IsValid() then CREATION_REPAIR.since[i] = nil
+        else
+            CREATION_REPAIR.since[i] = CREATION_REPAIR.since[i] or os.clock()
+            if not empty and os.clock() - CREATION_REPAIR.since[i] >= 1.5 then empty = i end
+        end
+    end
+    if not empty or os.clock() - CREATION_REPAIR.last < 3 or CREATION_REPAIR.failed >= 2 then return end
+    CREATION_REPAIR.last = os.clock()
+    local actor, step = nil, "create"
+    local ok, err = pcall(function()
+        actor = pcm:CreateBlankEditionActor(FName("Party Creation Actor"), 1, nil)
+        if not (actor and actor.IsValid and actor:IsValid()) then error("no blank character made") end
+        step = "store"
+        local e = ec[empty]
+        e.RulesetActor = actor
+    end)
+    local ra = Try(function() return ec[empty].RulesetActor end)
+    local fixed = ra and ra.IsValid and ra:IsValid()
+    local refreshed = 0
+    if fixed then
+        CREATION_REPAIR.since[empty] = nil; CREATION_REPAIR.failed = 0
+        for _, vm in ipairs(Instances("GameSessionViewModel")) do
+            if pcall(function() vm:ReadCharacterEditionSlots() end) then refreshed = refreshed + 1 end
+        end
+    end
+    if not fixed then CREATION_REPAIR.failed = CREATION_REPAIR.failed + 1 end   -- two failures: stop (no stray blank characters)
+    Keep("creation: slot %d had no character (Fill Party?): %s", empty,
+        fixed and string.format("a blank one put in (%s); party screen re-read %d time(s)", ShortName(ra:GetFullName()), refreshed)
+        or string.format("repair failed at %s: %s", step, ok and "the slot still reads empty" or tostring(err)))
+end
+
 Every(1000, function()
     if not Active() then return end
     NewScan(); pcall(PruneExtras)
     pcall(FixPartyStrip, false); pcall(ExtendInspectionPortraits, false); pcall(UpdateExtraHighlights); pcall(FitHeroRows)
+    local okR, errR = pcall(CREATION_REPAIR.Check)
+    if not okR then Out("creation repair: %s", tostring(errR)) end
 end)
 
 local function ToggleEnabled()

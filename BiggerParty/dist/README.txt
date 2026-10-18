@@ -1,4 +1,4 @@
-BiggerParty 1.5.2 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670 / CL-114967 and the 11 Oct 2026 patch)
+BiggerParty 1.5.3 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670 / CL-114967 and the 11 Oct 2026 patch)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.
@@ -22,7 +22,7 @@ IN GAME
                          volume, Kobold race on/off and the kobold voice); a click changes one, Back returns
   Version check       -> in multiplayer, a player whose BiggerParty differs from the host's (or is older than
                          1.4.13) gets a message; everyone in a session needs the same version, and the same
-                         Kobold race setting (the version reads "1.5.2+kobold" while the race is on)
+                         Kobold race setting (the version reads "1.5.3+kobold" while the race is on)
   New Campaign        -> six character slots
   Inventory/character -> six portraits (Tab or click to switch hero)
   Story dialogues     -> work with six heroes (four take a family role; two sit that scene out) (all "Create Character");
@@ -48,7 +48,7 @@ KOBOLD RACE (optional: "k" in the installer)
   A playable kobold: pick Kobold in character creation. It looks like the game's kobolds, carries its weapons
   and gear, and has Draconic Cry and the Kobold Legacy. In cutscenes a kobold hero's lines are spoken in a
   kobold voice (recorded with ElevenLabs; played by the Narrator's helper, so it needs the Narrator).
-  Mod options       -> "Kobold race: On/Off" (from the next start; while it is off, kobold heroes show as gnomes)
+  Mod options       -> "Kobold race: On/Off" (from the next start; while it is off, kobold heroes show as gnomes but keep their traits)
                        and "Kobold voice" (each click steps it down, 50% to 10%, then back to 50%)
   Ctrl+Shift+, / .      kobold voice quieter / louder
   Settings in <game>\Brimstone\Binaries\Win64\Kobold.ini (Enabled, VoiceLevel); log in Kobold.log (this launch;

@@ -228,6 +228,16 @@ nearest to: a spot behind or beside that hero, checked with `ABrimstoneCharacter
 `TeleportTo` and so the party formation's `ActorTeleported`. A hero who was elsewhere when the scene began
 is left alone, and guests are never moved (in the unmodded game a guest a scene does not bind stays put too).
 
+**Party creation slots.** `UPartyCreationManagerComponent::EditionCharacters` holds one `FEditionCharacter` per slot
+(`RulesetActor`, `Avatar`, `CharacterSpecterActor`, `Transform`); its tick builds a slot's model once the character's
+creation data passes `UCharacterEditionHelpers::IsValid` (an ancestry, a first name, a biography, a class) and destroys
+the slot when a model stands over data that fails it. Fill Party (`RandomizeCharacter` per slot) gives every hero a
+different ancestry, so with the game's four it fills four slots. A slot left with no character at all is repaired
+by the host the way `ClearEditionActor` finishes: `CreateBlankEditionActor("Party Creation Actor", 1, nullptr)` into
+the slot, then `UGameSessionViewModel::ReadCharacterEditionSlots`. (`ClearEditionActor` itself cannot be used: it
+dereferences the character it is given. And never fetch `GetHeroCreationParamsFromActor` from a script: returning
+that structure through UE4SS crashed the game without a dump.)
+
 ## Party formation with more than four heroes
 
 Followers walk to *anchors* that the formation manager arranges around the party leader, and each follower's
@@ -422,6 +432,11 @@ animation blueprint, rides on it, mirrors its montages and carries its weapons. 
 portrait capture aim at the hidden body's bones, so that body is lowered while one of them looks at it. Only
 heroes become kobolds — an actor whose simulation actor owns a `HeroIdentityComponent` — because the game
 draws some of its own NPCs on the gnome body too.
+
+**Switched off.** `Kobold.ini Enabled=0` (Mod options: Kobold race) still registers Draconic Cry and the Kobold
+Legacy and keeps them in the definitions table: a saved kobold hero's choices name them by tag, and party creation
+crashes in `UHeroChoicesComponent::ModifyChoices` when one is missing. Nothing else runs: the gnome is not offered,
+nobody gets the kobold look, no voice, no keys.
 
 **The kobold voice.** A cutscene's speakers are dialogue roles (`Dialogue.Participant.Party.A`–`D`), bound to
 heroes by the scene's participant plan, so the lines a hero speaks depend on its seat and family role. Each

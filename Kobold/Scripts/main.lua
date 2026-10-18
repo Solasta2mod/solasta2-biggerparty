@@ -25,7 +25,7 @@ local function Tag(t) return Try(function() return t.TagName:ToString() end) or 
 
 local logPath = nil
 -- settings and the game's folder: one table (the main chunk is at Lua's limit of 200 locals)
-local KCFG = { version = "1.0.1", Enabled = true, VoiceLevel = 0.30, Lab = false, dir = nil }
+local KCFG = { version = "1.0.2", Enabled = true, VoiceLevel = 0.30, Lab = false, dir = nil }
 function KCFG.Dir()                      -- the folder of the game's exe ("" when it is the working folder)
     if KCFG.dir then return KCFG.dir end
     local f = io.open("BiggerParty.ini", "r")
@@ -96,11 +96,15 @@ local function Every(ms, fn)      -- fn runs on the game thread every ms
     end)
 end
 if not KCFG.Read() then KCFG.Write("Enabled", "1") end      -- a first start writes the defaults
+-- off: no Kobold in creation, no kobold look, voice or keys - but the race's choice and power definitions are still
+-- registered further down (KCFG.DefinitionsOnly), because saved kobold heroes look them up by tag and the game
+-- crashes in party creation (UHeroChoicesComponent::ModifyChoices) when they are missing
 if not KCFG.Enabled then
-    Log("Kobold %s: off (Kobold.ini Enabled=0, Mod options: Kobold race) - nothing in the game is changed", KCFG.version)
-    return
+    KCFG.DefinitionsOnly = true
+    Log("Kobold %s: off (Kobold.ini Enabled=0, Mod options: Kobold race) - no Kobold in creation and no kobold look; the race's choices and powers stay registered so saved kobold heroes load", KCFG.version)
+else
+    Log("Kobold %s: on; voice level %.2f%s", KCFG.version, KCFG.VoiceLevel, KCFG.Lab and "; developer keys on" or "")
 end
-Log("Kobold %s: on; voice level %.2f%s", KCFG.version, KCFG.VoiceLevel, KCFG.Lab and "; developer keys on" or "")
 
 local function Vec(v)
     local x, y, z = Try(function() return v.X end), Try(function() return v.Y end), Try(function() return v.Z end)
@@ -1564,6 +1568,24 @@ local function KoboldRace()
     Log("Kobold race: %s; now title %q, offered %s, sort %s, effects %s", table.concat(changes, ", "),
         Str(Try(function() return gnome.Title end)) or "?", tostring(Try(function() return gnome.bEnumerableForUser end)),
         tostring(Try(function() return gnome.SortOrder end)), table.concat(effects, " "))
+end
+if KCFG.DefinitionsOnly then
+    Every(1000, function()
+        if not KCFG.definitionsBuilt then
+            local gnome = Load("/Ruleset_2024/Database/Ancestries/Gnome/DA_AN_Gnome.DA_AN_Gnome", true)
+            if not gnome then return end
+            KCFG.definitionsBuilt = true
+            local okC, errC = pcall(BuildDraconicCry, gnome)
+            local okL, errL = pcall(BuildKoboldLegacy, gnome)
+            local names = {}
+            for _, e in ipairs(KOBOLD_REGISTERED or {}) do names[#names + 1] = e[1] end
+            Log("Kobold race off: %d kobold definition(s) registered for saved kobold heroes%s%s (nothing else is changed)", #names,
+                okC and "" or ("; Draconic Cry failed: " .. tostring(errC)), okL and "" or ("; Kobold Legacy failed: " .. tostring(errL)))
+        else
+            pcall(KeepKoboldDefinitions)
+        end
+    end)
+    return
 end
 -- every character of the Kobold ancestry gets the kobold body; the creation avatar follows the ancestry picked
 local KOBOLD_TAG = "Ruleset.Ancestry.Gnome"
