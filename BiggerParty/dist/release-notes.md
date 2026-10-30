@@ -1,5 +1,12 @@
 For Solasta II Early Access builds **CL-112340**, **CL-112436** (14 Sep 2026), **CL-113670** (21 Sep 2026 "Stabilization" patch) and **CL-114967** (1 Oct 2026), and the 11 Oct 2026 patch.
 
+**1.5.4** — the installer makes sure the game can write the mod's folders. On some PCs the game folder only lets
+Windows users read, and then UE4SS cannot open its log (`ue4ss\UE4SS.log`: "Access is denied"), stops, and runs no
+mods: party creation shows six cards (the native patch works) but the host screen offers only 2..4 players and nothing
+else of the mod appears. The installer now grants the Users group modify rights on `ue4ss`, `Narrator`,
+`BiggerParty.ini` and `Kobold.ini` and removes a stale UE4SS log, on every install and update; if it cannot, it says
+so (run it as administrator). The README has a short "if only half works" section. Everyone in a session needs 1.5.4.
+
 **1.5.3** — switching the Kobold race off no longer crashes party creation, and empty creation slots are repaired.
 With **Kobold race: Off**, the Kobold mod stopped before building anything, so a saved kobold hero's Kobold Legacy
 choice had no definition and the game crashed when party creation loaded the saved heroes. Switched off, the mod now

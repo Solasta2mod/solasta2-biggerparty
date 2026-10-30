@@ -45,7 +45,7 @@ Uninstall: run the installer again and press **u**.
 Version check: in multiplayer every player's BiggerParty tells the host its version after each load, and the
 host answers with its own. A player on a different version, or on one that does not report (before 1.4.13, or
 no BiggerParty), gets a message in the game's information dialog, and the line goes to the history log. The
-Kobold race counts as part of the version (it reads `1.5.3+kobold` while the race is on), so everyone in a
+Kobold race counts as part of the version (it reads `1.5.4+kobold` while the race is on), so everyone in a
 session needs the same setting.
 
 Config: `<game>\Brimstone\Binaries\Win64\BiggerParty.ini` (`Enabled=1`, `PartySize=6`, up to 8 — the UI

@@ -30,7 +30,7 @@ local UEHelpers = require("UEHelpers")
 local TAG = "[BiggerParty] "
 -- the mod's version, shown in Mod options and compared between the players of a session: bump it with every
 -- release (with kVersion in the installer). A global: this chunk is at Lua's limit of 200 locals.
-BIGGERPARTY_VERSION = "1.5.3"
+BIGGERPARTY_VERSION = "1.5.4"
 
 local function Out(fmt, ...) print(TAG .. string.format(fmt, ...) .. "\n") end
 -- The key lines also go to BiggerParty-history.log next to the ini, which survives restarts (UE4SS wipes its

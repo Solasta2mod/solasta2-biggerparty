@@ -14,6 +14,8 @@
 #include <shlwapi.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <aclapi.h>
+#include <sddl.h>
 #include <io.h>
 #include <fcntl.h>
 #include <cstdio>
@@ -30,7 +32,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t* kVersion = L"BiggerParty 1.5.3 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967 / 11 Oct 2026)";
+static const wchar_t* kVersion = L"BiggerParty 1.5.4 (game builds CL-112340 / CL-112436 / CL-113670 / CL-114967 / 11 Oct 2026)";
 static bool g_silent = false;
 
 // ------------------------------------------------------------------------------------------------
@@ -349,6 +351,46 @@ static bool DeleteTree(const std::wstring& dir)
     return SHFileOperationW(&op) == 0;
 }
 
+// The game writes into the folders and files the mods use: UE4SS its log in ue4ss\ (it stops - no mods at all - when
+// it cannot open UE4SS.log: "[0x5] Access is denied"), the Narrator its queue, the Lua the ini files. On some PCs the
+// game folder only lets Windows users read, so the installer grants the Users group (S-1-5-32-545, any language)
+// modify rights on exactly those, inherited by everything inside the folders.
+static bool GrantUsersModify(const std::wstring& path, bool folder)
+{
+    PSID users = nullptr;
+    if (!ConvertStringSidToSidW(L"S-1-5-32-545", &users)) return false;
+    PACL oldDacl = nullptr, newDacl = nullptr; PSECURITY_DESCRIPTOR sd = nullptr;
+    DWORD r = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &oldDacl, nullptr, &sd);
+    if (r == ERROR_SUCCESS) {
+        EXPLICIT_ACCESSW ea = {};
+        ea.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE;
+        ea.grfAccessMode = GRANT_ACCESS;
+        ea.grfInheritance = folder ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        ea.Trustee.ptstrName = (LPWSTR)users;
+        r = SetEntriesInAclW(1, &ea, oldDacl, &newDacl);
+        if (r == ERROR_SUCCESS)
+            r = SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, newDacl, nullptr);
+    }
+    if (newDacl) LocalFree(newDacl);
+    if (sd) LocalFree(sd);
+    LocalFree(users);
+    return r == ERROR_SUCCESS;
+}
+static void MakeGameWritable(const std::wstring& win64)
+{
+    std::wstring log = Join(win64, L"ue4ss\\UE4SS.log");          // a stale, read-only or foreign-owned log blocks UE4SS too
+    if (Exists(log)) { SetFileAttributesW(log.c_str(), FILE_ATTRIBUTE_NORMAL); DeleteFileW(log.c_str()); }
+    int failed = 0;
+    for (auto rel : { L"ue4ss", L"Narrator" })
+        if (IsDir(Join(win64, rel)) && !GrantUsersModify(Join(win64, rel), true)) { ++failed; Say(L"WARNING: could not let Windows users write %s", rel); }
+    for (auto rel : { L"BiggerParty.ini", L"Kobold.ini" })
+        if (Exists(Join(win64, rel)) && !GrantUsersModify(Join(win64, rel), false)) { ++failed; Say(L"WARNING: could not let Windows users write %s", rel); }
+    if (failed)
+        Say(L"If the mod does not load (ue4ss\\UE4SS.log: \"Access is denied\"), run this installer as administrator once.");
+}
+
 static int Install(const std::wstring& root, bool narrator, bool kobold)
 {
     std::wstring win64 = Join(root, L"Brimstone\\Binaries\\Win64");
@@ -406,6 +448,7 @@ static int Install(const std::wstring& root, bool narrator, bool kobold)
     if (IsDir(Join(modsDir, L"PartyProbe"))) SetMod(mods, "PartyProbe", false, false);   // research version; never both
     if (kobold && IsDir(Join(modsDir, L"KoboldLab"))) SetMod(mods, "KoboldLab", false, false);   // development version; never both
     if (!WriteMods(modsDir, mods)) { Say(L"FAILED to update ue4ss\\Mods\\mods.txt"); return 3; }
+    MakeGameWritable(win64);
 
     Say(L"\nDone - %d file(s) written to\n  %s", written, win64.c_str());
     Say(L"Config: %s (Enabled=1, PartySize=6). In game: Ctrl+Shift+Tab toggles the mod.", Join(win64, L"BiggerParty.ini").c_str());

@@ -1,4 +1,4 @@
-BiggerParty 1.5.3 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670 / CL-114967 and the 11 Oct 2026 patch)
+BiggerParty 1.5.4 for Solasta II (Early Access builds CL-112340 / CL-112436 / CL-113670 / CL-114967 and the 11 Oct 2026 patch)
 ============================================================
 Lets a NEW campaign have up to 6 heroes and a hosted lobby up to 6 players.
 Existing saves are untouched; loading a 4-hero save behaves exactly as vanilla.
@@ -22,7 +22,7 @@ IN GAME
                          volume, Kobold race on/off and the kobold voice); a click changes one, Back returns
   Version check       -> in multiplayer, a player whose BiggerParty differs from the host's (or is older than
                          1.4.13) gets a message; everyone in a session needs the same version, and the same
-                         Kobold race setting (the version reads "1.5.3+kobold" while the race is on)
+                         Kobold race setting (the version reads "1.5.4+kobold" while the race is on)
   New Campaign        -> six character slots
   Inventory/character -> six portraits (Tab or click to switch hero)
   Story dialogues     -> work with six heroes (four take a family role; two sit that scene out) (all "Create Character");
@@ -65,6 +65,11 @@ LOGS     <game>\Brimstone\Binaries\Win64\BiggerParty.log   (patcher)  and  ue4ss
 
 UNINSTALL  run the installer again and choose "u" (removes the mod; asks about GiveSpellbook / Kobold / Narrator /
            UE4SS).
+
+IF ONLY HALF WORKS  six cards in party creation but the host screen still offers 2..4 players: the script half
+(UE4SS) is not running. With ConsoleEnabled = 1 in ue4ss\UE4SS-settings.ini a console window shows why. "Access is
+denied" on ue4ss\UE4SS.log: run the installer again (since 1.5.4 it lets Windows users write the mod's folders), as
+administrator if it warns. No UE4SS.log and no console: install the current Microsoft Visual C++ Redistributable (x64).
 
 AFTER A GAME UPDATE  the patcher refuses to touch code it does not recognise ("NOT patchable" in
 BiggerParty.log) and the mod goes inert until a matching version is released. Your saves are safe.
